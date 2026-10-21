@@ -78,4 +78,11 @@ Wypisuje adresy modułów w głównym flashu i wyciąga je do katalogu.
 
 ## 8. Gdzie jesteśmy
 
-Instalacja z CD przechodzi, start z flasha uruchamia aplikację MMI. Po ok. 60 s `mmi_root` robi reset (power down), bo `recv_ibus` nie zgłasza gotowości (sygnał 0x6E30), więc procesy MMI nie dostają startu, a `build_screen` nie odpowiada na watchdog (0x6E06). `recv_ibus` czeka na coś z `/pack/rc`, `/rc5`, `/c0/_129` (ARCNET) albo `/ibus`. To następny krok.
+Instalacja z CD przechodzi, a start z flasha uruchamia całą aplikację MMI: wszystkie procesy zgłaszają gotowość (0x6E30), `mmi_root` rozsyła start (0x6E2E) i nie ma już power down. Ekran działa: po ok. 100 s emulacji widać planszę startową „Attention! … Highway code has priority.” z przyciskami RENAULT / OK / PHILIPS (zrzut: [first_screen.png](first_screen.png)).
+
+Wideo to SCC66470 (VSC), nie MCD212 z CD-i: DRAM 512 KB pod 0x600000 (program wyświetlania pod 0x6003EC), rejestry pod 0x7FFFE0, okno akceleratora pikseli (IPA) pod 0x1600000. `videodr` ustawia ekran 384×240, 8 bitów na piksel, a `ghandler` rysuje przez akcelerator. Paleta jest zastępcza (RRRGGGBB), bo nie wiadomo jeszcze, gdzie CARiN trzyma tablicę kolorów. Następny krok to wejście: pilot (`rc5`) i przyciski auta, żeby przejść dalej niż plansza z „OK”.
+
+Stronę samochodu emulujemy na sztywno w `carin.cpp` (pola `m_car_*`, sekcje oznaczone „Car side”), docelowo do sterowania z okienka emulatora auta:
+
+- zapłon (+12 V): bajt 0x9FA008 w bloku stanu slave'a ma wartość 1, inaczej `syscondr` po odliczaniu wyłącza system,
+- wyświetlacz na `nav_bus` (I2C 0x50): przyjmuje każdy komunikat od `recv_ibus`, podnosi linię uwagi (IRQ4, bit 2 w 0xC0001C) i przy odczycie statusu z 0x51 potwierdza oba sloty (0x11). Bez tego `recv_ibus` wisiał na zapisie do `/nav_bus`, nie zgłaszał gotowości, a `mmi_root` po 60 s robił reset, bo `build_screen` nie odpowiadał na watchdog (0x6E06).

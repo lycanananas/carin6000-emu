@@ -4,8 +4,8 @@
 
     Philips CARiN Mk1/Mk2 navigation system (Renault Carminat)
 
-    68EC030 host running OS-9 with CD-i derived video (MCD212) and CD (CDIC)
-    hardware. Split out of the CD-i driver (philips/cdi.cpp); the CD-i consoles
+    68EC030 host running OS-9 with an SCC66470 video controller (VSC) and a CD
+    drive behind the slave controller. Split out of the CD-i driver (philips/cdi.cpp); the CD-i consoles
     and Quizard sets are not part of this tree.
 
 *******************************************************************************/
@@ -80,18 +80,17 @@ void carin_state::carin_mem(address_map &map)
     map(0x310000, 0x317fff).rw(m_slave_hle, FUNC(cdislave_hle_device::slave_r), FUNC(cdislave_hle_device::slave_w));
     map(0x320000, 0x323fff).rw("mk48t08", FUNC(timekeeper_device::read), FUNC(timekeeper_device::write)).umask16(0xff00);
 
-    // Video RAM (VRAM: 0x00600500) i VSC
-	// CARiN drives only the MCD212 channel 2 registers, so its display list at 0x600400 lives in plane B.
-	map(0x400000, 0x47ffff).rw(FUNC(carin_state::plane_r<0>), FUNC(carin_state::plane_w<0>));
-	map(0x600000, 0x67ffff).rw(FUNC(carin_state::plane_r<1>), FUNC(carin_state::plane_w<1>));
+	// VSC (SCC66470): its 2 MB space sits at 0x600000 with the registers at the top (0x7fffe0);
+	// 512 KB of DRAM at 0x600000 (display program at 0x6003ec, frame buffer allocated by videodr).
+	// The pixel accelerator window mirrors the DRAM 16 MB higher (videodr reports the offset).
+	map(0x600000, 0x7fffff).m(m_vsc, FUNC(scc66470_device::map));
+	map(0x600000, 0x67ffff).rw(FUNC(carin_state::vsc_dram_r), FUNC(carin_state::vsc_dram_w));
+	map(0x1600000, 0x167ffff).rw(m_vsc, FUNC(scc66470_device::ipa_r), FUNC(scc66470_device::ipa_w));
 
 	// Main system RAM (2 MiB)
 	map(0x800000, 0x9effff).ram();
 	map(0x9f0000, 0x9fffff).rw(FUNC(carin_state::carin_slave_r), FUNC(carin_state::carin_slave_w));
 	map(0xf00000, 0xf0003f).rw(FUNC(carin_state::carin_arcnet_r), FUNC(carin_state::carin_arcnet_w));
-
-    // Rejestry VSC / VDSC (MCD212): CARiN decodes them at 0x7fffe0, not at the CD-i address 0x4fffe0
-    map(0x7fffe0, 0x7fffff).m(m_mcd212, FUNC(mcd212_device::map));
 
 	map(0xc00000, 0xc0003f).rw(FUNC(carin_state::mcasic_r), FUNC(carin_state::mcasic_w));
 
@@ -138,6 +137,8 @@ void carin_state::carin_mem(address_map &map)
 
 void carin_state::machine_start()
 {
+	m_vram = std::make_unique<uint16_t[]>(0x80000 / 2);
+	save_pointer(NAME(m_vram), 0x80000 / 2);
 	save_item(NAME(m_mcasic_regs));
 	save_item(NAME(m_mcasic_reg12));
 	save_item(NAME(m_mcasic_mock_pending));
@@ -161,6 +162,10 @@ void carin_state::machine_start()
 	m_i2c_timer = timer_alloc(FUNC(carin_state::i2c_done), this);
 	save_item(NAME(m_i2c_result));
 	save_item(NAME(m_i2c_pending));
+	save_item(NAME(m_i2c_write_address));
+	save_item(NAME(m_cdic_irq));
+	save_item(NAME(m_car_ignition));
+	save_item(NAME(m_car_navbus_attention));
 	save_item(NAME(m_mbox_irq_channel));
 
 	m_tick_timer = timer_alloc(FUNC(carin_state::system_tick), this);
@@ -314,7 +319,10 @@ void carin_state::mcasic_w(offs_t offset, uint32_t data, uint32_t mem_mask)
 			}
 		}
 		if (offset == 7)
+		{
 			update_level3_irq();
+			update_level4_irq();
+		}
 		if ((byte_addr == 0x1c) && (m_mcasic_regs[offset & 0x0f] != old_value))
 		{
 			m_trace.line(carin_trace::MCASIC, trace_time(), "W C0001C=%02X pc=%06X",
@@ -333,7 +341,9 @@ void carin_state::mcasic_w(offs_t offset, uint32_t data, uint32_t mem_mask)
 // C00020 DMA buffer, C00024 control, C00026 status, C00028 byte count, C0002A slave address.
 // Control bit 7 starts a write, bit 5 a read, bit 6 aborts and bit 2 acknowledges the interrupt;
 // these bits do not stick. Completion sets C0001B bit 1 and raises level 3 while C0001C bit 1 is set.
-// No device is modelled yet: every address ACKs, writes are dropped and reads return zeros.
+// The address byte holds the R/W bit (odd = read). Every address ACKs; apart from the nav bus
+// display at 0x50 (see the car side below) writes are dropped and reads return zeros. Control bit 5
+// (read into the internal buffer) is not used by OS-9 here and also returns zeros.
 void carin_state::i2c_control_w(uint16_t data)
 {
 	if (BIT(data, 2))
@@ -348,7 +358,26 @@ void carin_state::i2c_control_w(uint16_t data)
 	const uint8_t count = uint8_t(m_mcasic_regs[10] >> 24);
 	const uint8_t address = uint8_t(m_mcasic_regs[10] >> 8);
 	address_space &space = m_maincpu->space(AS_PROGRAM);
-	if (BIT(data, 7))
+	if (BIT(data, 7) && BIT(address, 0))
+	{
+		// The address byte carries the R/W bit: an odd address reads count bytes into the buffer.
+		for (unsigned i = 0; i < count; i++)
+			space.write_byte(buffer + i, 0x00);
+		if (address == 0x51 && count)
+		{
+			// Car side: the nav bus display answers vbnavi2c's status read with one nibble per message
+			// slot (slot 0 high), bit 0 = message taken. Acknowledge both slots and drop the request.
+			space.write_byte(buffer, 0x11);
+			m_car_navbus_attention = false;
+			update_level4_irq();
+		}
+		m_trace.line(carin_trace::MCASIC, trace_time(), "I2C read addr=%02X n=%u first=%02X ctrl=%04X pc=%06X", address, count, space.read_byte(buffer), data, m_maincpu->pc());
+		// 0x283: read done; vbi2csp2 only copies its DMA buffer to the caller on this status.
+		m_i2c_result = 0x0283;
+		m_i2c_write_address = -1;
+		m_i2c_timer->adjust(attotime::from_usec(100 * (count + 1)));
+	}
+	else if (BIT(data, 7))
 	{
 		char dump[2 * 16 + 1] = {};
 		for (unsigned i = 0; i < count && i < 16; i++)
@@ -356,12 +385,14 @@ void carin_state::i2c_control_w(uint16_t data)
 		m_trace.line(carin_trace::MCASIC, trace_time(), "I2C write addr=%02X n=%u data=%s ctrl=%04X pc=%06X", address, count, dump, data, m_maincpu->pc());
 		// 0x383: write done with ACK; bit 8 asks for a repeated start, which completes as 0x283.
 		m_i2c_result = BIT(data, 8) ? 0x0283 : 0x0383;
+		m_i2c_write_address = address;
 		m_i2c_timer->adjust(attotime::from_usec(100 * (count + 1)));
 	}
 	else if (BIT(data, 5))
 	{
 		for (unsigned i = 0; i < count; i++)
 			space.write_byte(buffer + i, 0x00);
+		m_i2c_write_address = -1;
 		m_trace.line(carin_trace::MCASIC, trace_time(), "I2C read addr=%02X n=%u ctrl=%04X pc=%06X", address, count, data, m_maincpu->pc());
 		m_i2c_result = 0x0042;
 		m_i2c_timer->adjust(attotime::from_usec(100 * (count + 1)));
@@ -378,6 +409,15 @@ TIMER_CALLBACK_MEMBER(carin_state::i2c_done)
 	m_i2c_pending = true;
 	m_trace.line(carin_trace::MCASIC, trace_time(), "I2C done status=%04X", m_i2c_result);
 	update_level3_irq();
+
+	// Car side: every message written to the nav bus display (recv_ibus/nav_bus via vbnavi2c) is
+	// taken at once, and the display raises its attention line so the unit reads the slot status.
+	if (m_i2c_write_address == 0x50)
+	{
+		m_car_navbus_attention = true;
+		update_level4_irq();
+	}
+	m_i2c_write_address = -1;
 }
 
 // Level 3 is shared by the I2C controller (gated by C0001C bit 1) and the slave mailbox, which
@@ -386,6 +426,14 @@ void carin_state::update_level3_irq()
 {
 	const bool i2c = m_i2c_pending && BIT(m_mcasic_regs[7], 25);
 	m_maincpu->set_input_line(M68K_IRQ_3, (i2c || m_mbox_irq_channel) ? ASSERT_LINE : CLEAR_LINE);
+}
+
+// Level 4 (autovector 28): the nav bus attention line, gated by C0001C bit 2 (vbnavi2c clears it in
+// its ISR and sets it again once the status read is done); the CDIC line is unused by CARiN.
+void carin_state::update_level4_irq()
+{
+	const bool navbus = m_car_navbus_attention && BIT(m_mcasic_regs[7], 26);
+	m_maincpu->set_input_line(M68K_IRQ_4, (navbus || m_cdic_irq) ? ASSERT_LINE : CLEAR_LINE);
 }
 
 uint32_t carin_state::carin_slave_r(offs_t offset, uint32_t mem_mask)
@@ -399,10 +447,10 @@ uint32_t carin_state::carin_slave_r(offs_t offset, uint32_t mem_mask)
 	}
 
 	uint32_t response = m_slave_shared_ram[offset];
-	// Slave I/O state block at 0x9FA000, read bytewise by syscondr. Byte 8 is the key switch
+	// Car side: slave I/O state block at 0x9FA000, read bytewise by syscondr. Byte 8 is the key switch
 	// (ignition +12V), 1 = on; with 0 syscondr counts down and signals sysgo to power down (0x13F).
 	if (byte_addr == 0x009fa008)
-		response = (response & 0x00ffffff) | 0x01000000;
+		response = (response & 0x00ffffff) | (uint32_t(m_car_ignition ? 1 : 0) << 24);
 	// HLE of the status page the slave application keeps for subsystem 0x88 (h_itc page 0x88):
 	// +2 service 0x81, +4 bit 1 "alive", +5 data length, data from +6. sysgo and start_slave poll
 	// data byte 0x14 until it reads 2 ("synchronised"); each failed poll leaks an h_itc path.
@@ -716,35 +764,78 @@ void carin_state::duart_irq_w(int state)
 	m_maincpu->set_input_line(M68K_IRQ_2, state ? ASSERT_LINE : CLEAR_LINE);
 }
 
-void carin_state::mcd_irq_w(int state)
+void carin_state::vsc_irq_w(int state)
 {
-	log_irq("mcd212", 1, state);
+	log_irq("vsc", 1, state);
 	m_maincpu->set_input_line(M68K_IRQ_1, state ? ASSERT_LINE : CLEAR_LINE);
 }
 
 void carin_state::cdic_irq_w(int state)
 {
 	m_trace.count("irq4_cdic_unused");
-	m_maincpu->set_input_line(M68K_IRQ_4, state ? ASSERT_LINE : CLEAR_LINE);
+	m_cdic_irq = state;
+	update_level4_irq();
 }
 
-template<int Channel>
-uint16_t carin_state::plane_r(offs_t offset, uint16_t mem_mask)
+// CPU access to the VSC DRAM goes through the VSC, which arbitrates it against the display.
+uint16_t carin_state::vsc_dram_r(offs_t offset, uint16_t mem_mask)
 {
-	m_maincpu->eat_cycles(m_mcd212->ram_dtack_cycle_count<Channel>());
-	return Channel ? m_plane_b[offset] : m_plane_a[offset];
+	if (!machine().side_effects_disabled())
+		m_maincpu->eat_cycles(m_maincpu->attotime_to_cycles(attotime::from_ticks(m_vsc->dram_dtack_cycles(), m_vsc->clock())));
+	return m_vsc->dram_r(offset, mem_mask);
 }
 
-template<int Channel>
-void carin_state::plane_w(offs_t offset, uint16_t data, uint16_t mem_mask)
+void carin_state::vsc_dram_w(offs_t offset, uint16_t data, uint16_t mem_mask)
 {
-	m_maincpu->eat_cycles(m_mcd212->ram_dtack_cycle_count<Channel>());
-	uint16_t &plane = Channel ? m_plane_b[offset] : m_plane_a[offset];
-	COMBINE_DATA(&plane);
+	if (!machine().side_effects_disabled())
+		m_maincpu->eat_cycles(m_maincpu->attotime_to_cycles(attotime::from_ticks(m_vsc->dram_dtack_cycles(), m_vsc->clock())));
+	m_vsc->dram_w(offset, data, mem_mask);
+}
+
+// The VSC's own view of its DRAM.
+uint16_t carin_state::vram_r(offs_t offset, uint16_t mem_mask)
+{
+	return m_vram[offset] & mem_mask;
+}
+
+void carin_state::vram_w(offs_t offset, uint16_t data, uint16_t mem_mask)
+{
+	COMBINE_DATA(&m_vram[offset]);
+}
+
+void carin_state::vsc_map(address_map &map)
+{
+	map(0x00000, 0x7ffff).rw(FUNC(carin_state::vram_r), FUNC(carin_state::vram_w));
+}
+
+void carin_state::placeholder_palette(palette_device &palette) const
+{
+	for (unsigned i = 0; i < 0x100; i++)
+		palette.set_pen_color(i, pal3bit(i >> 5), pal3bit(i >> 2), pal2bit(i));
+}
+
+uint32_t carin_state::screen_update(screen_device &screen, bitmap_rgb32 &bitmap, const rectangle &cliprect)
+{
+	const unsigned width = std::min<unsigned>(m_vsc->width(), 768);
+	uint8_t buffer[768];
+	for (int y = cliprect.min_y; y <= cliprect.max_y; y++)
+	{
+		uint32_t *dest = &bitmap.pix(y);
+		if (width == 0 || m_vsc->width() > 768)
+		{
+			std::fill_n(dest + cliprect.min_x, cliprect.width(), 0);
+			continue;
+		}
+		m_vsc->line(y, buffer, width);
+		for (int x = cliprect.min_x; x <= cliprect.max_x; x++)
+			dest[x] = (unsigned(x) < width) ? m_palette->pen(buffer[x]) : 0;
+	}
+	return 0;
 }
 
 // MAME models the 68EC030 with a 32-bit address bus, so the interrupt acknowledge space ends at 0xffffffff.
-// Every source is autovectored: DUART/ARCNET level 2 (26), MCASIC I2C/h_itc/dc level 3 (27), tick level 6.
+// Every source is autovectored: DUART/ARCNET level 2 (26), MCASIC I2C/h_itc/dc level 3 (27),
+// nav bus attention level 4 (28), tick level 6.
 void carin_state::carin_cpu_space(address_map &map)
 {
 	map(0xfffffff0, 0xffffffff).m(m_maincpu, FUNC(m68ec030_device::autovectors_map));
@@ -756,17 +847,20 @@ void carin_state::carin(machine_config &config)
 	m_maincpu->set_addrmap(AS_PROGRAM, &carin_state::carin_mem);
 	m_maincpu->set_addrmap(m68000_base_device::AS_CPU_SPACE, &carin_state::carin_cpu_space);
 
-	MCD212(config, m_mcd212, CLOCK_A, m_plane_a, m_plane_b);
-	m_mcd212->set_screen("screen");
-	m_mcd212->int_callback().set(FUNC(carin_state::mcd_irq_w));
-
 	screen_device &screen(SCREEN(config, "screen"));
-	screen.set_raw(14976000*2, 960, 0, 768, 312*2, 32*2, 312*2);
+	screen.set_raw(CLOCK_A / 2, 960, 0, 768, 312, 32, 312);
 	screen.set_video_attributes(VIDEO_UPDATE_SCANLINE);
-	screen.set_screen_update(m_mcd212, FUNC(mcd212_device::screen_update));
+	screen.set_screen_update(FUNC(carin_state::screen_update));
+
+	SCC66470(config, m_vsc, CLOCK_A);
+	m_vsc->set_addrmap(0, &carin_state::vsc_map);
+	m_vsc->set_screen("screen");
+	m_vsc->irq().set(FUNC(carin_state::vsc_irq_w));
 
 	CDI220_LCD(config, m_lcd);
-	PALETTE(config, "palette").set_entries(0x100);
+	// The VSC outputs 8-bit colour indexes; where CARiN keeps its colour table is not known yet, so this
+	// is a placeholder RRRGGGBB palette.
+	PALETTE(config, m_palette, FUNC(carin_state::placeholder_palette), 0x100);
 	config.set_default_layout(layout_cdi);
 
 	CDI_CDIC(config, m_cdic, 45.1584_MHz_XTAL / 2);

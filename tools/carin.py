@@ -153,6 +153,11 @@ def mame_command(state, log_dir, cdrom):
     ]
 
 
+def speed_options(args):
+    """Full speed by default; --realtime throttles to the real machine's speed."""
+    return [] if args.realtime else ["-nothrottle"]
+
+
 def trace_env(args):
     env = dict(os.environ)
     env.pop("CARIN_TRACE", None)
@@ -208,7 +213,8 @@ def cmd_run(args):
     state = prepare_state(args)
     log_dir = new_log_dir("run", state)
     cmd = mame_command(state, log_dir, cd_image())
-    cmd += ["-seconds_to_run", str(args.seconds), "-video", "none", "-sound", "none", "-nothrottle"]
+    cmd += ["-seconds_to_run", str(args.seconds), "-video", "none", "-sound", "none"]
+    cmd += speed_options(args)
     env = trace_env(args)
     if probe_env(args, env):
         cmd += ["-autoboot_script", str(ROOT / "tools" / "carin_probe.lua")]
@@ -236,6 +242,7 @@ def cmd_gui(args):
     # Two windows: the navigation video and the OS-9 console on terminal A.
     cmd = mame_command(state, log_dir, cd_image())
     cmd += ["-window", "-numscreens", "2", "-view0", "Screen 0", "-view1", "Screen 2"]
+    cmd += speed_options(args)
     if args.debug:
         cmd += ["-debug"]
     cmd += args.mame_args
@@ -280,6 +287,8 @@ def add_state_options(p):
     t.add_argument("--trace", metavar="CHANNELS",
                    help="'off', or a comma list of channels (ipc,mailbox,mcasic,arcnet,duart,nv,irq,cdrom,video)")
     t.add_argument("--trace-cap", type=int, metavar="BYTES", help="size cap of each trace file")
+    p.add_argument("--realtime", action="store_true",
+                   help="run at the real machine's speed (default: as fast as possible, -nothrottle)")
     p.add_argument("-b", "--build", action="store_true", help="build MAME first")
     p.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 2, help="build jobs")
     p.add_argument("mame_args", nargs="*", help="extra MAME options (after --)")

@@ -11,7 +11,8 @@
 #include "cdicdic.h"
 #include "cdi220_lcd.h"
 #include "sound/dmadac.h"
-#include "mcd212.h"
+#include "machine/scc66470.h"
+#include "emupal.h"
 #include "bus/rs232/rs232.h"
 #include "screen.h"
 
@@ -27,11 +28,10 @@ public:
 		, m_maincpu(*this, "maincpu")
 		, m_lcd(*this, "lcd")
 		, m_slave_hle(*this, "slave_hle")
-		, m_plane_a(*this, "plane0", 0x80000, ENDIANNESS_BIG)
-		, m_plane_b(*this, "plane1", 0x80000, ENDIANNESS_BIG)
 		, m_cdic(*this, "cdic")
 		, m_cdrom(*this, "cdrom")
-		, m_mcd212(*this, "mcd212")
+		, m_vsc(*this, "vsc")
+		, m_palette(*this, "palette")
 		, m_duart(*this, "duart")
 		, m_dmadac(*this, "dac%u", 1U)
 		, m_flash(*this, "flash%u", 0U)
@@ -46,13 +46,15 @@ private:
 	required_device<m68ec030_device> m_maincpu;
 	required_device<cdi220_lcd> m_lcd;
 	required_device<cdislave_hle_device> m_slave_hle;
-	memory_share_creator<uint16_t> m_plane_a;
-	memory_share_creator<uint16_t> m_plane_b;
 	// Backed by the "nv" nvram device, which takes its first-boot contents from the "nv" region (nv.img).
 	uint8_t m_nv[0x2000] = {};
 	required_device<cdicdic_device> m_cdic;
 	required_device<cdrom_image_device> m_cdrom;
-	required_device<mcd212_device> m_mcd212;
+	// Video: an SCC66470 (VSC) with 512 KB DRAM at 0x600000, registers at 0x7fffe0 and the pixel
+	// accelerator window (IPA) at 0x1600000; videodr runs a 384x240 8-bit screen on it.
+	required_device<scc66470_device> m_vsc;
+	required_device<palette_device> m_palette;
+	std::unique_ptr<uint16_t[]> m_vram;
 	required_device<mc68681_device> m_duart;
 	required_device_array<dmadac_sound_device, 2> m_dmadac;
 	// Main flash (flsh, nav software): four 29F040 on the byte lanes of the 32-bit bus.
@@ -71,6 +73,13 @@ private:
 	uint16_t m_i2c_result = 0;
 	bool m_i2c_pending = false;
 	uint8_t m_mbox_irq_channel = 0;
+	int m_i2c_write_address = -1;
+	bool m_cdic_irq = false;
+
+	// Car side (HLE): what the car around the unit answers. Fixed for now; meant to be driven by a
+	// car emulator window later (ignition, nav bus display, ...).
+	bool m_car_ignition = true;            // key switch / +12V after ignition, reported by the slave
+	bool m_car_navbus_attention = false;   // the nav bus display (I2C 0x50) asks to be read
 	uint32_t m_slave_shared_ram[0x10000 / 4] = {};
 	std::ofstream m_uart_out[2];
 	carin_trace m_trace;
@@ -88,14 +97,20 @@ private:
 	emu_timer *m_tick_timer = nullptr;
 	bool m_tick_enabled = false;
 
-	template<int Channel> uint16_t plane_r(offs_t offset, uint16_t mem_mask = ~0);
-	template<int Channel> void plane_w(offs_t offset, uint16_t data, uint16_t mem_mask = ~0);
+	uint16_t vsc_dram_r(offs_t offset, uint16_t mem_mask = ~0);
+	void vsc_dram_w(offs_t offset, uint16_t data, uint16_t mem_mask = ~0);
+	uint16_t vram_r(offs_t offset, uint16_t mem_mask = ~0);
+	void vram_w(offs_t offset, uint16_t data, uint16_t mem_mask = ~0);
+	void vsc_map(address_map &map) ATTR_COLD;
+	void placeholder_palette(palette_device &palette) const;
+	uint32_t screen_update(screen_device &screen, bitmap_rgb32 &bitmap, const rectangle &cliprect);
 	TIMER_CALLBACK_MEMBER(pc_watch_tick);
 	TIMER_CALLBACK_MEMBER(system_tick);
 	uint32_t mcasic_r(offs_t offset);
 	void mcasic_w(offs_t offset, uint32_t data, uint32_t mem_mask = ~0);
 	void i2c_control_w(uint16_t data);
 	void update_level3_irq();
+	void update_level4_irq();
 	TIMER_CALLBACK_MEMBER(i2c_done);
 	uint32_t carin_slave_r(offs_t offset, uint32_t mem_mask);
 	void carin_slave_w(offs_t offset, uint32_t data, uint32_t mem_mask);
@@ -110,7 +125,7 @@ private:
 	uint8_t duart_r(offs_t offset);
 	void duart_w(offs_t offset, uint8_t data);
 	void duart_irq_w(int state);
-	void mcd_irq_w(int state);
+	void vsc_irq_w(int state);
 	void log_irq(const char *source, unsigned level, int state);
 	void carin_mem(address_map &map) ATTR_COLD;
 	void carin_cpu_space(address_map &map) ATTR_COLD;

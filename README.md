@@ -2,7 +2,7 @@
 
 Emulator nawigacji Philips CARiN (Renault Carminat, Mk2) oparty na MAME. 68EC030 z OS-9, wideo i napęd CD z rodziny CD-i (MCD212, CDIC).
 
-Stan: instalacja oprogramowania z CD do flasha przechodzi, start z flasha uruchamia aplikację MMI. Po ok. 60 s system wchodzi w power down, bo `recv_ibus` nie dostaje gotowości z magistrali (szczegóły w [docs/carin_testowanie.md](docs/carin_testowanie.md), sekcja „Gdzie jesteśmy”).
+Stan: instalacja oprogramowania z CD do flasha przechodzi, start z flasha uruchamia całą aplikację MMI bez power down (zapłon i wyświetlacz na magistrali nav są emulowane na sztywno). Ekran wideo działa (plansza startowa z ostrzeżeniem i przyciskiem OK); brakuje jeszcze wejścia z pilota/auta (szczegóły w [docs/carin_testowanie.md](docs/carin_testowanie.md), sekcja „Gdzie jesteśmy”).
 
 ## Zawartość repo
 
@@ -34,8 +34,9 @@ tools/carin.py build
 # 2. Płyta: wrzuć carin_nav_sw.chd do cd/, albo carin_nav_sw.cue + .img i zrób z nich CHD:
 tools/carin.py chd
 
-# 3. Pierwsze uruchomienie: instalacja z CD do flasha (ok. 2,5 min, konsola pokaże
-#    "il: Release loaded correctly"; potem zamknij MAME)
+# 3. Pierwsze uruchomienie: instalacja z CD do flasha (ok. 150 s czasu emulacji, przy
+#    domyślnym -nothrottle kilka sekund; konsola pokaże "il: Release loaded correctly",
+#    potem zamknij MAME)
 tools/carin.py gui --seed --state installed
 
 # 4. Kolejne uruchomienia: start z zainstalowanego oprogramowania
@@ -81,17 +82,18 @@ tools/carin.py run 90         # 90 s
 tools/carin.py run 90 -b      # najpierw przebuduj
 ```
 
-Emulacja idzie najszybciej, jak się da, bez obrazu i dźwięku. Na końcu skrypt drukuje raport (~80 linii): zdarzenia, liczniki, gdzie stoi CPU, końcówkę konsoli OS-9 i kanałów śledzenia.
+Emulacja idzie najszybciej, jak się da (`--realtime` zwalnia do czasu rzeczywistego), bez obrazu i dźwięku. Na końcu skrypt drukuje raport (~80 linii): zdarzenia, liczniki, gdzie stoi CPU, końcówkę konsoli OS-9 i kanałów śledzenia.
 
 ## Z oknem (GUI)
 
 ```bash
 tools/carin.py gui --state installed
 tools/carin.py gui --state installed --debug     # z debuggerem MAME
+tools/carin.py gui --state installed --realtime  # w tempie prawdziwego urządzenia
 tools/carin.py gui -- -window -nomax             # dodatkowe opcje MAME po "--"
 ```
 
-Otwierają się dwa okna: wideo nawigacji i konsola OS-9 (terminal A). Emulacja idzie w czasie rzeczywistym. Jeśli klawisze nie trafiają do konsoli, przełącz klawiaturę Scroll Lockiem.
+Otwierają się dwa okna: wideo nawigacji i konsola OS-9 (terminal A). Emulacja domyślnie idzie najszybciej, jak się da (`-nothrottle`); `--realtime` zwalnia ją do prędkości prawdziwego urządzenia. Jeśli klawisze nie trafiają do konsoli, przełącz klawiaturę Scroll Lockiem.
 
 ## Logi
 
