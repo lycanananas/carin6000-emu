@@ -4,7 +4,7 @@
   tools/carin.py build                 compile mame/ (only the CARiN driver)
   tools/carin.py run [options]         headless run, prints a report
   tools/carin.py gui [options]         windowed run in real time
-  tools/carin.py chd                   rebuild cd/carin_nav_sw.chd from the .cue/.img
+  tools/carin.py chd [NAME]            make cd/NAME.chd from cd/NAME.cue (default: carin_nav_sw)
   tools/carin.py report <log dir>      reprint the report of an earlier run
 
 Machine state (NV + flash) lives in state/<name>/ (default: state/default/). Every run gets its
@@ -109,7 +109,23 @@ def build(jobs):
 # ---------------------------------------------------------------------------------------------
 # running
 
-def cd_image():
+def cd_image(args):
+    """The disc in the drive: --cd PATH, none with --no-cd; by default the nav software disc with --seed
+    (the bootrom installs from it) and an empty drive otherwise: with the software disc in the drive
+    the bootrom boots from CD and the installer reprograms the flash."""
+    if getattr(args, "no_cd", False):
+        return None
+    if not getattr(args, "cd", None) and not getattr(args, "seed", False):
+        return None
+    if getattr(args, "cd", None):
+        # A bare name means cd/NAME.chd or cd/NAME.cue; anything else is a path to an image.
+        for candidate in (CD_DIR / f"{args.cd}.chd", CD_DIR / f"{args.cd}.cue"):
+            if "/" not in args.cd and candidate.is_file():
+                return candidate
+        path = Path(args.cd).expanduser().resolve()
+        if not path.is_file():
+            die(f"CD image {args.cd} not found (neither cd/{args.cd}.chd/.cue nor a file)")
+        return path
     chd = CD_DIR / f"{CD_NAME}.chd"
     if chd.exists():
         return chd
@@ -148,9 +164,8 @@ def mame_command(state, log_dir, cdrom):
         "-cfg_directory", str(MAME_CFG_DIR),
         "-nvram_directory", str(nvram),
         "-snapshot_directory", str(log_dir / "snap"),
-        "-cdrom", str(cdrom),
         "-skip_gameinfo",
-    ]
+    ] + (["-cdrom", str(cdrom)] if cdrom else [])
 
 
 def speed_options(args):
@@ -212,7 +227,7 @@ def cmd_run(args):
     check_binary()
     state = prepare_state(args)
     log_dir = new_log_dir("run", state)
-    cmd = mame_command(state, log_dir, cd_image())
+    cmd = mame_command(state, log_dir, cd_image(args))
     cmd += ["-seconds_to_run", str(args.seconds), "-video", "none", "-sound", "none"]
     cmd += speed_options(args)
     env = trace_env(args)
@@ -239,9 +254,10 @@ def cmd_gui(args):
     check_binary()
     state = prepare_state(args)
     log_dir = new_log_dir("gui", state)
-    # Two windows: the navigation video and the OS-9 console on terminal A.
-    cmd = mame_command(state, log_dir, cd_image())
-    cmd += ["-window", "-numscreens", "2", "-view0", "Screen 0", "-view1", "Screen 2"]
+    # One window (layout carin.lay): navigation video, the clickable front panel and the OS-9
+    # console on terminal A. Port B only goes to uart_b.txt.
+    cmd = mame_command(state, log_dir, cd_image(args))
+    cmd += ["-window", "-nomaximize", "-view", "Navigation, panel and console"]
     cmd += speed_options(args)
     if args.debug:
         cmd += ["-debug"]
@@ -260,8 +276,8 @@ def cmd_chd(args):
     chdman = shutil.which("chdman") or (str(MAME_DIR / "chdman") if (MAME_DIR / "chdman").exists() else None)
     if not chdman:
         die("chdman not found (package mame-tools, or: make -C mame TOOLS=1 ...)")
-    cue = CD_DIR / f"{CD_NAME}.cue"
-    chd = CD_DIR / f"{CD_NAME}.chd"
+    cue = CD_DIR / f"{args.name}.cue"
+    chd = CD_DIR / f"{args.name}.chd"
     if not cue.exists():
         die(f"{cue} missing")
     subprocess.run([chdman, "createcd", "-i", str(cue), "-o", str(chd), "--force"], check=True)
@@ -283,6 +299,11 @@ def add_state_options(p):
     mode.add_argument("--load", metavar="DIR",
                       help="replace the state with the snapshot in DIR (your own seed), then start")
     g.add_argument("--save-to", metavar="DIR", help="copy the state to DIR after the run")
+    c = p.add_argument_group("disc").add_mutually_exclusive_group()
+    c.add_argument("--cd", metavar="PATH",
+                   help=f"disc in the drive: a name from cd/ (NAME.chd or NAME.cue) or a path to an image "
+                        f"(default: {CD_NAME} with --seed, else empty)")
+    c.add_argument("--no-cd", action="store_true", help="run with an empty drive (also with --seed)")
     t = p.add_argument_group("tracing")
     t.add_argument("--trace", metavar="CHANNELS",
                    help="'off', or a comma list of channels (ipc,mailbox,mcasic,arcnet,duart,nv,irq,cdrom,video)")
@@ -321,7 +342,8 @@ def main():
     p.add_argument("--debug", action="store_true", help="open the MAME debugger")
     p.set_defaults(func=cmd_gui)
 
-    p = sub.add_parser("chd", help="make cd/carin_nav_sw.chd from the .cue/.img")
+    p = sub.add_parser("chd", help="make cd/NAME.chd from cd/NAME.cue (+ .img)")
+    p.add_argument("name", nargs="?", default=CD_NAME, help="disc name in cd/ (default: %(default)s)")
     p.set_defaults(func=cmd_chd)
 
     p = sub.add_parser("report", help="print the report of a log directory")

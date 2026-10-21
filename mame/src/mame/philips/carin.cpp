@@ -34,7 +34,7 @@
 #include "cdrom.h"
 
 
-#include "cdi.lh"
+#include "carin.lh"
 
 #define CLOCK_A 30_MHz_XTAL         // PAL system clock
 
@@ -46,7 +46,31 @@
 *      Input ports       *
 *************************/
 
+// Car side panel keys: codes of the 3A->3B fn 0x48 message (recv_ibus handler +0x64C). Only these
+// nine codes do something in the 0209 software. Names from the system diagnosis key check: 0 mute nav,
+// 1 last message, 2/3 volume +/-, 4 knob push, 8 stand by, 9 address book; 7 and 12 start the diagnosis auto test (no key on the
+// panel, probably service inputs) (6 keys + knob, 9 wires; the intermediate module takes 11 inputs). Codes 5, 6, 10 and 11
+// are ignored by recv_ibus; they are here to try them in the diagnosis key check.
+const uint8_t carin_state::s_car_key_codes[] = { 0, 1, 2, 3, 4, 7, 8, 9, 12, 5, 6, 10, 11 };
+
 static INPUT_PORTS_START( carin )
+	PORT_START("CAR_KEYS")
+	PORT_BIT(0x0001, IP_ACTIVE_HIGH, IPT_BUTTON1) PORT_NAME("Mute nav") PORT_CODE(KEYCODE_1)
+	PORT_BIT(0x0002, IP_ACTIVE_HIGH, IPT_BUTTON2) PORT_NAME("Last message") PORT_CODE(KEYCODE_2)
+	PORT_BIT(0x0004, IP_ACTIVE_HIGH, IPT_BUTTON3) PORT_NAME("Volume +") PORT_CODE(KEYCODE_3)
+	PORT_BIT(0x0008, IP_ACTIVE_HIGH, IPT_BUTTON4) PORT_NAME("Volume -") PORT_CODE(KEYCODE_4)
+	PORT_BIT(0x0010, IP_ACTIVE_HIGH, IPT_BUTTON5) PORT_NAME("Knob push") PORT_CODE(KEYCODE_5)
+	PORT_BIT(0x0020, IP_ACTIVE_HIGH, IPT_BUTTON6) PORT_NAME("Auto test (key 7)") PORT_CODE(KEYCODE_6)
+	PORT_BIT(0x0040, IP_ACTIVE_HIGH, IPT_BUTTON7) PORT_NAME("Stand by") PORT_CODE(KEYCODE_7)
+	PORT_BIT(0x0080, IP_ACTIVE_HIGH, IPT_BUTTON8) PORT_NAME("Address book") PORT_CODE(KEYCODE_8)
+	PORT_BIT(0x0100, IP_ACTIVE_HIGH, IPT_BUTTON9) PORT_NAME("Auto test (key 12)") PORT_CODE(KEYCODE_9)
+	PORT_BIT(0x0200, IP_ACTIVE_HIGH, IPT_BUTTON10) PORT_NAME("Key 5 (unused)") PORT_CODE(KEYCODE_Q)
+	PORT_BIT(0x0400, IP_ACTIVE_HIGH, IPT_BUTTON11) PORT_NAME("Key 6 (unused)") PORT_CODE(KEYCODE_W)
+	PORT_BIT(0x0800, IP_ACTIVE_HIGH, IPT_BUTTON12) PORT_NAME("Key 10 (unused)") PORT_CODE(KEYCODE_E)
+	PORT_BIT(0x1000, IP_ACTIVE_HIGH, IPT_BUTTON13) PORT_NAME("Key 11 (unused)") PORT_CODE(KEYCODE_R)
+	PORT_BIT(0x2000, IP_ACTIVE_HIGH, IPT_JOYSTICK_LEFT) PORT_NAME("Knob left") PORT_CODE(KEYCODE_LEFT)
+	PORT_BIT(0x4000, IP_ACTIVE_HIGH, IPT_JOYSTICK_RIGHT) PORT_NAME("Knob right") PORT_CODE(KEYCODE_RIGHT)
+
 	PORT_START("MOUSEX")
 	PORT_BIT(0xffff, 0x000, IPT_MOUSE_X) PORT_SENSITIVITY(100) PORT_KEYDELTA(2)
 
@@ -63,6 +87,10 @@ static INPUT_PORTS_START( carin )
 	PORT_CONFNAME( 0x01, 0x00, "Service mode" )
 	PORT_CONFSETTING(    0x00, DEF_STR( None ) )
 	PORT_CONFSETTING(    0x01, "Test plug (service shell)" )
+	PORT_CONFNAME( 0x06, 0x00, "Boot from CD" )
+	PORT_CONFSETTING(    0x00, "Auto (disc that is not maps)" )
+	PORT_CONFSETTING(    0x02, "Always (disc in drive)" )
+	PORT_CONFSETTING(    0x04, "Never" )
 INPUT_PORTS_END
 
 
@@ -167,6 +195,14 @@ void carin_state::machine_start()
 	save_item(NAME(m_car_ignition));
 	save_item(NAME(m_car_navbus_attention));
 	save_item(NAME(m_mbox_irq_channel));
+
+	m_car_input_timer = timer_alloc(FUNC(carin_state::car_input_poll), this);
+	m_car_input_timer->adjust(attotime::from_msec(20), 0, attotime::from_msec(20));
+	save_item(NAME(m_car_input_last));
+	m_mbox_reply_timer = timer_alloc(FUNC(carin_state::mbox_reply_irq), this);
+	m_car_notify_timer = timer_alloc(FUNC(carin_state::car_notify_tick), this);
+	m_car_notify_timer->adjust(attotime::from_msec(2), 0, attotime::from_msec(2));
+	save_item(NAME(m_car_notifies));
 
 	m_tick_timer = timer_alloc(FUNC(carin_state::system_tick), this);
 	m_tick_timer->adjust(attotime::from_hz(100), 0, attotime::from_hz(100));
@@ -288,30 +324,32 @@ void carin_state::mcasic_w(offs_t offset, uint32_t data, uint32_t mem_mask)
 		}
 		if (offset == 8 || offset == 10)
 			m_mcasic_mock_armed = true;
-		if (offset == 9 && m_mcasic_mock_armed)
+		if (offset == 9 && m_mcasic_mock_armed && m_maincpu->pc() < 0x800000)
 		{
 			uint16_t response_status = 0;
 			if (m_mcasic_mock_phase == 0 && (m_mcasic_regs[9] & 0x00200000))
 				response_status = 0x0063;
-			else if (m_mcasic_mock_phase == 1 && (m_mcasic_regs[9] & 0x00800000))
-				response_status = 0x0383;
-			else if (m_mcasic_mock_phase == 2 && (m_mcasic_regs[9] & 0x00800000))
-				response_status = 0x0283;
+			else if (m_mcasic_mock_phase >= 1 && (m_mcasic_regs[9] & 0x00800000))
+				// After the first exchange every transfer completes: odd addresses read (0x283), even write (0x383).
+				response_status = BIT(m_mcasic_regs[10], 8) ? 0x0283 : 0x0383;
 
 			if (response_status)
 			{
 				m_mcasic_mock_pending = true;
 				m_mcasic_mock_armed = false;
 				m_mcasic_mock_status = response_status;
-				m_mcasic_mock_phase++;
+				if (m_mcasic_mock_phase < 2)
+					m_mcasic_mock_phase++;
 
 				if (response_status == 0x0283)
 				{
 					const uint32_t buffer_address = m_mcasic_regs[8];
 					const bool low_ram = buffer_address >= 0x010000 && buffer_address < 0x080000;
 					const bool system_ram = buffer_address >= 0x800000 && buffer_address < 0xa00000;
+					// Reads here are the I/O expander at 0x44/0x45. Bit 1 low makes the bootrom load from CD
+					// even with valid software in flash (bootrom $44a8), see cd_boot_wanted().
 					if (low_ram || system_ram)
-						m_maincpu->space(AS_PROGRAM).write_byte(buffer_address, 0xff);
+						m_maincpu->space(AS_PROGRAM).write_byte(buffer_address, cd_boot_wanted() ? 0xfd : 0xff);
 				}
 
 				m_trace.line(carin_trace::MCASIC, trace_time(), "mock transaction phase=%u status=%04X pc=%06X",
@@ -335,6 +373,24 @@ void carin_state::mcasic_w(offs_t offset, uint32_t data, uint32_t mem_mask)
 		if (offset == 3 && ACCESSING_BITS_0_7)
 			m_trace.line(carin_trace::MCASIC, trace_time(), "W C0000F=%02X pc=%06X", uint8_t(m_mcasic_regs[3]), m_maincpu->pc());
 	}
+}
+
+// The bootrom loads from CD when the I/O expander line (bit 1 at 0x45) is low; with it high it boots
+// valid software from flash and never looks at the drive. What drives the line in the car is not
+// known. Auto pulls it low for any disc except a map disc (volume NAV_DB), so a software disc
+// (NAV_SW, or a home-made bootable one) starts while maps still run the installed software.
+bool carin_state::cd_boot_wanted()
+{
+	const uint8_t mode = ioport("SERVICE")->read() & 0x06;
+	if (mode == 0x04 || !m_cdrom->exists())
+		return false;
+	if (mode == 0x02)
+		return true;
+	uint8_t raw[2560] = {};
+	if (!m_cdrom->read_data(16, raw, cdrom_file::CD_TRACK_RAW_DONTCARE))
+		return true;
+	const unsigned data_offset = (raw[15] == 1) ? 16 : 24;
+	return std::string_view(reinterpret_cast<const char *>(raw + data_offset + 40), 6) != "NAV_DB";
 }
 
 // HLE of the MCASIC I2C master used by vbi2csp2 (OS-9 only; the bootrom keeps the mock above).
@@ -363,13 +419,21 @@ void carin_state::i2c_control_w(uint16_t data)
 		// The address byte carries the R/W bit: an odd address reads count bytes into the buffer.
 		for (unsigned i = 0; i < count; i++)
 			space.write_byte(buffer + i, 0x00);
-		if (address == 0x51 && count)
+		if (address == 0x51 && count == 1)
 		{
-			// Car side: the nav bus display answers vbnavi2c's status read with one nibble per message
-			// slot (slot 0 high), bit 0 = message taken. Acknowledge both slots and drop the request.
-			space.write_byte(buffer, 0x11);
+			// Car side: the intermediate module answers vbnavi2c's status read with one nibble per
+			// message slot (slot 0 high), bit 0 = message taken, bit 1 = message for the unit (slot 1).
+			space.write_byte(buffer, m_navbus_frames.empty() ? 0x11 : 0x13);
 			m_car_navbus_attention = false;
 			update_level4_irq();
+		}
+		else if (address == 0x51 && count && !m_navbus_frames.empty())
+		{
+			// Car side: the slot 1 fetch (after the 01 01 write) gets the next queued frame.
+			const std::vector<uint8_t> &frame = m_navbus_frames.front();
+			for (unsigned i = 0; i < count && i < frame.size(); i++)
+				space.write_byte(buffer + i, frame[i]);
+			m_navbus_frames.pop_front();
 		}
 		m_trace.line(carin_trace::MCASIC, trace_time(), "I2C read addr=%02X n=%u first=%02X ctrl=%04X pc=%06X", address, count, space.read_byte(buffer), data, m_maincpu->pc());
 		// 0x283: read done; vbi2csp2 only copies its DMA buffer to the caller on this status.
@@ -410,8 +474,9 @@ TIMER_CALLBACK_MEMBER(carin_state::i2c_done)
 	m_trace.line(carin_trace::MCASIC, trace_time(), "I2C done status=%04X", m_i2c_result);
 	update_level3_irq();
 
-	// Car side: every message written to the nav bus display (recv_ibus/nav_bus via vbnavi2c) is
-	// taken at once, and the display raises its attention line so the unit reads the slot status.
+	// Car side: every message written to the intermediate module (recv_ibus/nav_bus via vbnavi2c) is
+	// taken at once, and the module raises its attention line so the unit reads the slot status. The
+	// slot 1 fetch request (01 01) does the same, which brings the next queued frame, if any.
 	if (m_i2c_write_address == 0x50)
 	{
 		m_car_navbus_attention = true;
@@ -524,15 +589,28 @@ void carin_state::carin_mailbox_kick(uint8_t channel)
 		set_shared_byte(rx + 7, length);
 		for (unsigned i = 0; i < length; i++)
 			set_shared_byte(rx + 8 + i, payload[i]);
+		// State 3 = ready for the master; h_ibus_dr sets it to 2 while it takes the message.
 		set_shared_byte(rx + 1, 3);
 		m_trace.line(carin_trace::MAILBOX, trace_time(), "reply ch=%u type=%u len=%u", channel, reply_type, length);
-		// OS-9 drivers sleep until the slave interrupts; the bootrom polls instead.
+		// OS-9 drivers sleep until the slave interrupts; the bootrom polls instead. The interrupt comes a
+		// little later, like from the real slave: h_ibus_dr only arms its wait flag after the request.
 		if (m_maincpu->pc() >= 0x800000)
-		{
-			m_mbox_irq_channel = channel;
-			update_level3_irq();
-		}
+			m_mbox_reply_timer->adjust(attotime::from_usec(200), channel);
 	};
+
+	// Channel 8 is h_ibus_dr (/ibus, /rc5): each read (type 2) gets the next queued chunk, see car_rc5().
+	if (channel == 8 && type == 2)
+	{
+		std::vector<uint8_t> chunk;
+		if (!m_car_chunks.empty())
+		{
+			chunk = std::move(m_car_chunks.front());
+			m_car_chunks.pop_front();
+		}
+		m_trace.line(carin_trace::EVENTS, trace_time(), "ibus read -> %u bytes", unsigned(chunk.size()));
+		reply(0, chunk.data(), chunk.size());
+		return;
+	}
 
 	// Only channel 3 is the CD drive (bootrom and cddr_ipc); 8 is h_ibus_dr and 9 is dc_dr, whose protocols are unknown.
 	if (channel != 3)
@@ -544,7 +622,8 @@ void carin_state::carin_mailbox_kick(uint8_t channel)
 	else if (type == 6)
 	{
 		// Drive status query: payload byte 2 in 0x0A..0x11 means "disc ready", which makes the ROM load nav_sw_load.
-		static const uint8_t status[4] = { 0x00, 0x00, 0x0a, 0x00 };
+		// With no image loaded report 0 there; the real "no disc" code is not known.
+		const uint8_t status[4] = { 0x00, 0x00, uint8_t(m_cdrom->exists() ? 0x0a : 0x00), 0x00 };
 		reply(type, status, sizeof(status));
 	}
 	else if (type == 2)
@@ -588,6 +667,67 @@ void carin_state::carin_mailbox_kick(uint8_t channel)
 	}
 	else
 		m_trace.line(carin_trace::EVENTS, trace_time(), "mailbox type=%u NOT HANDLED", type);
+}
+
+// Car side: a message from the intermediate module to the unit, [src][dst][fn][data]. The module
+// queues it in its nav bus slot 1 (I2C 0x50) and raises the attention line; vbnavi2c reads the slot
+// status, fetches the slot and hands the frame to recv_ibus (nav_bus in raw mode keeps the source).
+// On the bus the frame is [src][len][dst][fn][data], len counting itself and the bytes after it.
+void carin_state::car_frame(uint8_t src, uint8_t dst, uint8_t fn, uint8_t data)
+{
+	m_navbus_frames.push_back({ src, 4, dst, fn, data });
+	m_trace.line(carin_trace::EVENTS, trace_time(), "car frame %02X %02X %02X %02X", src, dst, fn, data);
+	m_car_navbus_attention = true;
+	update_level4_irq();
+}
+
+// Car side: a remote control (RC5) code, delivered by the slave on channel 8 (/rc5). recv_ibus turns
+// it into an F0 3B 48/49 message; the routing table has no F0 3B 48/49 entry in this configuration,
+// so it is not wired to an input yet. The slave announces each byte with an unsolicited type 6
+// message (payload 1 = data available) and h_ibus_dr reads it with a type 2 request.
+void carin_state::car_rc5(uint8_t code)
+{
+	m_car_chunks.push_back({ code });
+	m_car_notifies++;
+	m_trace.line(carin_trace::EVENTS, trace_time(), "car rc5 %02X", code);
+}
+
+TIMER_CALLBACK_MEMBER(carin_state::mbox_reply_irq)
+{
+	m_mbox_irq_channel = uint8_t(param);
+	update_level3_irq();
+}
+
+TIMER_CALLBACK_MEMBER(carin_state::car_notify_tick)
+{
+	const uint32_t rx = shared_byte(2 + 8 * 6 + 3) * 0x100;
+	if (!m_car_notifies || !rx || m_mbox_irq_channel || m_mbox_reply_timer->enabled() || shared_byte(rx + 1) == 3)
+		return;
+	set_shared_byte(rx + 0, 8);
+	set_shared_byte(rx + 2, 6);
+	set_shared_byte(rx + 6, 0);
+	set_shared_byte(rx + 7, 1);
+	set_shared_byte(rx + 8, 1);
+	set_shared_byte(rx + 1, 3);
+	m_car_notifies--;
+	m_mbox_irq_channel = 8;
+	update_level3_irq();
+}
+
+TIMER_CALLBACK_MEMBER(carin_state::car_input_poll)
+{
+	// Panel keys send 3A->3B fn 0x48 <code> when pressed; the knob sends fn 0x49 with one step,
+	// bit 6 set for the negative direction.
+	const uint32_t keys = m_car_input->read();
+	const uint32_t pressed = keys & ~m_car_input_last;
+	m_car_input_last = keys;
+	for (unsigned bit = 0; bit < std::size(s_car_key_codes); bit++)
+		if (BIT(pressed, bit))
+			car_frame(0x3a, 0x3b, 0x48, s_car_key_codes[bit]);
+	if (BIT(pressed, 13))
+		car_frame(0x3a, 0x3b, 0x49, 0x40 | 1);
+	if (BIT(pressed, 14))
+		car_frame(0x3a, 0x3b, 0x49, 1);
 }
 
 uint8_t carin_state::carin_arcnet_r(offs_t offset)
@@ -861,7 +1001,7 @@ void carin_state::carin(machine_config &config)
 	// The VSC outputs 8-bit colour indexes; where CARiN keeps its colour table is not known yet, so this
 	// is a placeholder RRRGGGBB palette.
 	PALETTE(config, m_palette, FUNC(carin_state::placeholder_palette), 0x100);
-	config.set_default_layout(layout_cdi);
+	config.set_default_layout(layout_carin);
 
 	CDI_CDIC(config, m_cdic, 45.1584_MHz_XTAL / 2);
 	m_cdic->set_clock2(45.1584_MHz_XTAL * 3 / 7);
@@ -870,7 +1010,8 @@ void carin_state::carin(machine_config &config)
 	mc68681_device &duart(MC68681(config, m_duart, 3'686'400));
 	duart.irq_cb().set(FUNC(carin_state::duart_irq_w));
 	rs232_port_device &terminal_a(RS232_PORT(config, "terminal_a", default_rs232_devices, "terminal"));
-	rs232_port_device &terminal_b(RS232_PORT(config, "terminal_b", default_rs232_devices, "terminal"));
+	// Port B carries nothing useful; its output still goes to uart_b.txt.
+	rs232_port_device &terminal_b(RS232_PORT(config, "terminal_b", default_rs232_devices, nullptr));
 	terminal_a.rxd_handler().set(m_duart, FUNC(mc68681_device::rx_a_w));
 	duart.a_tx_cb().set(terminal_a, FUNC(rs232_port_device::write_txd));
 	terminal_b.rxd_handler().set(m_duart, FUNC(mc68681_device::rx_b_w));

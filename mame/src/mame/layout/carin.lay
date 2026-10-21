@@ -1,0 +1,90 @@
+<?xml version="1.0"?>
+<!--
+license:CC0-1.0
+-->
+<mamelayout version="2">
+	<!-- CARiN: navigation screen, the front panel (click the keys; CAR_KEYS inputs) and the
+	     OS-9 console on DUART port A. The CAR box is reserved for the car emulator (ignition, ...). -->
+	<element name="background"><rect><color red="0.08" green="0.08" blue="0.09" /></rect></element>
+	<element name="key" defstate="0">
+		<rect state="0"><color red="0.22" green="0.22" blue="0.25" /></rect>
+		<rect state="1"><color red="0.85" green="0.62" blue="0.15" /></rect>
+	</element>
+	<element name="t_mute_nav"><text string="Mute nav"><color red="0.95" green="0.95" blue="0.95" /></text></element>
+	<element name="t_last_message"><text string="Last message"><color red="0.95" green="0.95" blue="0.95" /></text></element>
+	<element name="t_vol__"><text string="VOL +"><color red="0.95" green="0.95" blue="0.95" /></text></element>
+	<element name="t_stand_by"><text string="Stand by"><color red="0.95" green="0.95" blue="0.95" /></text></element>
+	<element name="t_address_book"><text string="Address book"><color red="0.95" green="0.95" blue="0.95" /></text></element>
+	<element name="t_left"><text string="&lt;"><color red="0.95" green="0.95" blue="0.95" /></text></element>
+	<element name="t_right"><text string="&gt;"><color red="0.95" green="0.95" blue="0.95" /></text></element>
+	<element name="t_push"><text string="PUSH"><color red="0.95" green="0.95" blue="0.95" /></text></element>
+	<element name="t_auto_test_7"><text string="Auto test 7"><color red="0.95" green="0.95" blue="0.95" /></text></element>
+	<element name="t_auto_test_12"><text string="Auto test 12"><color red="0.95" green="0.95" blue="0.95" /></text></element>
+	<element name="t_key_5"><text string="Key 5"><color red="0.95" green="0.95" blue="0.95" /></text></element>
+	<element name="t_key_6"><text string="Key 6"><color red="0.95" green="0.95" blue="0.95" /></text></element>
+	<element name="t_key_10"><text string="Key 10"><color red="0.95" green="0.95" blue="0.95" /></text></element>
+	<element name="t_key_11"><text string="Key 11"><color red="0.95" green="0.95" blue="0.95" /></text></element>
+	<element name="t_panel"><text string="PANEL"><color red="0.55" green="0.55" blue="0.6" /></text></element>
+	<element name="t_service"><text string="SERVICE"><color red="0.55" green="0.55" blue="0.6" /></text></element>
+	<element name="t_car"><text string="CAR"><color red="0.55" green="0.55" blue="0.6" /></text></element>
+	<element name="t__car_emulator__later_"><text string="(car emulator, later)"><color red="0.55" green="0.55" blue="0.6" /></text></element>
+
+	<group name="panel">
+		<bounds x="0" y="0" width="160" height="360" />
+		<element ref="t_panel"><bounds x="0" y="0" width="160" height="16" /></element>
+		<element ref="t_service"><bounds x="0" y="184" width="160" height="16" /></element>
+		<element ref="t_car"><bounds x="0" y="304" width="160" height="16" /></element>
+		<element ref="key" inputtag="CAR_KEYS" inputmask="0x0001"><bounds x="0" y="22" width="76" height="28" /></element>
+		<element ref="t_mute_nav"><bounds x="2" y="29" width="72" height="14" /></element>
+		<element ref="key" inputtag="CAR_KEYS" inputmask="0x0002"><bounds x="84" y="22" width="76" height="28" /></element>
+		<element ref="t_last_message"><bounds x="86" y="29" width="72" height="14" /></element>
+		<element ref="key" inputtag="CAR_KEYS" inputmask="0x0004"><bounds x="0" y="56" width="76" height="28" /></element>
+		<element ref="t_vol__"><bounds x="2" y="63" width="72" height="14" /></element>
+		<element ref="key" inputtag="CAR_KEYS" inputmask="0x0008"><bounds x="84" y="56" width="76" height="28" /></element>
+		<element ref="t_vol__"><bounds x="86" y="63" width="72" height="14" /></element>
+		<element ref="key" inputtag="CAR_KEYS" inputmask="0x0040"><bounds x="0" y="90" width="76" height="28" /></element>
+		<element ref="t_stand_by"><bounds x="2" y="97" width="72" height="14" /></element>
+		<element ref="key" inputtag="CAR_KEYS" inputmask="0x0080"><bounds x="84" y="90" width="76" height="28" /></element>
+		<element ref="t_address_book"><bounds x="86" y="97" width="72" height="14" /></element>
+		<element ref="key" inputtag="CAR_KEYS" inputmask="0x2000"><bounds x="0" y="128" width="48" height="40" /></element>
+		<element ref="t_left"><bounds x="2" y="141" width="44" height="14" /></element>
+		<element ref="key" inputtag="CAR_KEYS" inputmask="0x0010"><bounds x="56" y="128" width="48" height="40" /></element>
+		<element ref="t_push"><bounds x="58" y="141" width="44" height="14" /></element>
+		<element ref="key" inputtag="CAR_KEYS" inputmask="0x4000"><bounds x="112" y="128" width="48" height="40" /></element>
+		<element ref="t_right"><bounds x="114" y="141" width="44" height="14" /></element>
+		<element ref="key" inputtag="CAR_KEYS" inputmask="0x0020"><bounds x="0" y="206" width="76" height="24" /></element>
+		<element ref="t_auto_test_7"><bounds x="2" y="211" width="72" height="14" /></element>
+		<element ref="key" inputtag="CAR_KEYS" inputmask="0x0100"><bounds x="84" y="206" width="76" height="24" /></element>
+		<element ref="t_auto_test_12"><bounds x="86" y="211" width="72" height="14" /></element>
+		<element ref="key" inputtag="CAR_KEYS" inputmask="0x0200"><bounds x="0" y="236" width="76" height="24" /></element>
+		<element ref="t_key_5"><bounds x="2" y="241" width="72" height="14" /></element>
+		<element ref="key" inputtag="CAR_KEYS" inputmask="0x0400"><bounds x="84" y="236" width="76" height="24" /></element>
+		<element ref="t_key_6"><bounds x="86" y="241" width="72" height="14" /></element>
+		<element ref="key" inputtag="CAR_KEYS" inputmask="0x0800"><bounds x="0" y="266" width="76" height="24" /></element>
+		<element ref="t_key_10"><bounds x="2" y="271" width="72" height="14" /></element>
+		<element ref="key" inputtag="CAR_KEYS" inputmask="0x1000"><bounds x="84" y="266" width="76" height="24" /></element>
+		<element ref="t_key_11"><bounds x="86" y="271" width="72" height="14" /></element>
+		<element ref="t__car_emulator__later_"><bounds x="0" y="326" width="160" height="12" /></element>
+	</group>
+
+	<view name="Navigation, panel and console">
+		<element ref="background"><bounds x="0" y="0" width="660" height="624" /></element>
+		<screen tag="screen"><bounds x="0" y="0" width="480" height="360" /></screen>
+		<group ref="panel"><bounds x="495" y="0" width="160" height="360" /></group>
+		<screen tag="terminal_a:terminal:terminal_screen"><bounds x="0" y="370" width="660" height="254" /></screen>
+	</view>
+
+	<view name="Navigation and panel">
+		<element ref="background"><bounds x="0" y="0" width="660" height="360" /></element>
+		<screen tag="screen"><bounds x="0" y="0" width="480" height="360" /></screen>
+		<group ref="panel"><bounds x="495" y="0" width="160" height="360" /></group>
+	</view>
+
+	<view name="Navigation">
+		<screen tag="screen"><bounds x="0" y="0" width="480" height="360" /></screen>
+	</view>
+
+	<view name="Console">
+		<screen tag="terminal_a:terminal:terminal_screen"><bounds x="0" y="0" width="640" height="240" /></screen>
+	</view>
+</mamelayout>

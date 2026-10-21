@@ -18,6 +18,8 @@
 
 #include "carin_trace.h"
 
+#include <deque>
+#include <vector>
 #include <fstream>
 
 class carin_state : public driver_device
@@ -36,6 +38,7 @@ public:
 		, m_dmadac(*this, "dac%u", 1U)
 		, m_flash(*this, "flash%u", 0U)
 		, m_bootflash(*this, "bootflash")
+		, m_car_input(*this, "CAR_KEYS")
 	{ }
 
 	void carin(machine_config &config);
@@ -80,6 +83,21 @@ private:
 	// car emulator window later (ignition, nav bus display, ...).
 	bool m_car_ignition = true;            // key switch / +12V after ignition, reported by the slave
 	bool m_car_navbus_attention = false;   // the nav bus display (I2C 0x50) asks to be read
+	required_ioport m_car_input;           // panel keys and knob, see s_car_key_codes
+	uint32_t m_car_input_last = 0;
+	std::deque<std::vector<uint8_t>> m_navbus_frames;   // module -> unit frames waiting in nav bus slot 1
+	std::deque<std::vector<uint8_t>> m_car_chunks;      // /rc5 data waiting for h_ibus_dr reads
+	emu_timer *m_car_input_timer = nullptr;
+	emu_timer *m_car_notify_timer = nullptr;
+	emu_timer *m_mbox_reply_timer = nullptr;
+	unsigned m_car_notifies = 0;           // "data available" announcements still to send
+	static const uint8_t s_car_key_codes[13];
+	void car_frame(uint8_t src, uint8_t dst, uint8_t fn, uint8_t data);
+	void car_rc5(uint8_t code);
+	bool cd_boot_wanted();
+	TIMER_CALLBACK_MEMBER(car_input_poll);
+	TIMER_CALLBACK_MEMBER(car_notify_tick);
+	TIMER_CALLBACK_MEMBER(mbox_reply_irq);
 	uint32_t m_slave_shared_ram[0x10000 / 4] = {};
 	std::ofstream m_uart_out[2];
 	carin_trace m_trace;

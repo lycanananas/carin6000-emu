@@ -10,7 +10,7 @@ Stan: instalacja oprogramowania z CD do flasha przechodzi, start z flasha urucha
 |---|---|
 | `mame/` | Drzewo źródeł MAME przycięte do jednego sterownika: `src/mame/philips/carin.cpp` (+ `carin.h`, `carin_trace.h`) i urządzeń, których używa. Bazą jest upstream MAME, commit `b1f71f8f`. |
 | `roms/carin/` | `bootrom_0209.bin` (bootrom 2.09) i `nv.img` (seed pamięci NV). |
-| `cd/` | Płyta z oprogramowaniem nawigacji, nie jest w repo (`.gitignore`): `carin_nav_sw.chd` albo `carin_nav_sw.cue` + `.img` (+ opcjonalnie `.ccd`/`.sub`). |
+| `cd/` | Obrazy płyt, nie są w repo (`.gitignore`): oprogramowanie `carin_nav_sw` i mapy, np. `carin_maps_pl_2012_2013` (`.chd` albo `.cue` + `.img`). Opis w [cd/README.md](cd/README.md). |
 | `tools/` | `carin.py` (budowanie i uruchamianie) oraz narzędzia analityczne. |
 | `docs/` | Notatki z reverse engineeringu. |
 | `state/` | Stany maszyny (NV + flash). Ignorowany przez gita. |
@@ -32,7 +32,7 @@ Stan: instalacja oprogramowania z CD do flasha przechodzi, start z flasha urucha
 tools/carin.py build
 
 # 2. Płyta: wrzuć carin_nav_sw.chd do cd/, albo carin_nav_sw.cue + .img i zrób z nich CHD:
-tools/carin.py chd
+tools/carin.py chd                # dowolną inną: tools/carin.py chd NAZWA
 
 # 3. Pierwsze uruchomienie: instalacja z CD do flasha (ok. 150 s czasu emulacji, przy
 #    domyślnym -nothrottle kilka sekund; konsola pokaże "il: Release loaded correctly",
@@ -46,6 +46,26 @@ tools/carin.py gui --state installed
 Instalację można też zrobić bez okna, w kilka sekund: `tools/carin.py run 200 --seed --state installed`.
 
 Wszystkie opcje: `tools/carin.py --help` oraz `tools/carin.py run --help` / `gui --help`. Skrypt nie czyta zmiennych środowiskowych.
+
+## Płyta w napędzie
+
+Do instalacji i zmiany języka potrzebna jest płyta z oprogramowaniem, a do jazdy płyta z mapami. Płytę wybiera się przy każdym uruchomieniu (`run` i `gui`):
+
+| Opcja | Działanie |
+|---|---|
+| (brak) | pusty napęd; z `--seed` płyta `cd/carin_nav_sw` (instalacja) |
+| `--cd NAZWA` | `cd/NAZWA.chd` albo `cd/NAZWA.cue`, np. `--cd carin_maps_pl_2012_2013` |
+| `--cd ŚCIEŻKA` | dowolny obraz (`.chd`, `.cue`, `.iso`…) |
+| `--no-cd` | pusty napęd |
+
+```bash
+tools/carin.py gui --state installed --cd carin_maps_pl_2012_2013   # nawigacja z mapami
+tools/carin.py gui --state installed --cd ~/obrazy/inna_plyta.cue
+```
+
+Bootrom przy ważnym flashu startuje z płyty tylko wtedy, gdy linia z ekspandera I/O (I2C 0x45, bit 1) jest niska. Emulator ustawia ją według opcji MAME „Boot from CD” (Tab → Machine Configuration): **Auto** (domyślnie) = każda płyta oprócz map (etykieta NAV_DB), **Always**, **Never**. Z płytą NAV_SW w napędzie IL wchodzi w „FORCED LOADING” i programuje flash od nowa, tak jak w prawdziwym urządzeniu. Nie zamykaj wtedy MAME w trakcie, bo zostanie połowiczny flash i pętla resetów (przywróć wtedy stan z kopii).
+
+Uwaga: przy zainstalowanym flashu bootrom startuje dziś zawsze z flasha, nawet z płytą `NAV_SW` w napędzie. Na prawdziwym sprzęcie płyta ma pierwszeństwo, więc to jest do poprawienia.
 
 ## Stan maszyny: seed albo własny seed
 
@@ -90,10 +110,12 @@ Emulacja idzie najszybciej, jak się da (`--realtime` zwalnia do czasu rzeczywis
 tools/carin.py gui --state installed
 tools/carin.py gui --state installed --debug     # z debuggerem MAME
 tools/carin.py gui --state installed --realtime  # w tempie prawdziwego urządzenia
-tools/carin.py gui -- -window -nomax             # dodatkowe opcje MAME po "--"
+tools/carin.py gui -- -resolution 1320x1248      # dodatkowe opcje MAME po "--"
 ```
 
-Otwierają się dwa okna: wideo nawigacji i konsola OS-9 (terminal A). Emulacja domyślnie idzie najszybciej, jak się da (`-nothrottle`); `--realtime` zwalnia ją do prędkości prawdziwego urządzenia. Jeśli klawisze nie trafiają do konsoli, przełącz klawiaturę Scroll Lockiem.
+Otwiera się jedno okno (layout `mame/src/mame/layout/carin.lay`): u góry ekran nawigacji, obok panel z przyciskami do klikania myszką (PANEL: przyciski i pokrętło `<` PUSH `>`; SERVICE: autotest i nieużywane kody; CAR: miejsce na emulator auta), pod spodem konsola OS-9 (UART A). UART B ląduje tylko w `uart_b.txt`. Inne widoki (sama nawigacja, nawigacja z panelem, sama konsola) są w menu MAME (Tab → Video Options).
+
+Klawiatura: 1 Mute nav, 2 Last message, 3 VOL+, 4 VOL−, 5 wciśnięcie pokrętła, 7 Stand by, 8 Address book, ←/→ pokrętło; 6 i 9 uruchamiają autotest diagnostyczny; Q/W/E/R to kody nieobsługiwane przez soft. Nazwy i klawisze można zmienić w MAME (Tab → Input). Emulacja domyślnie idzie najszybciej, jak się da (`-nothrottle`); `--realtime` zwalnia ją do prędkości prawdziwego urządzenia. Scroll Lock przełącza klawiaturę między konsolą (pisanie w terminalu) a przyciskami emulatora.
 
 ## Logi
 
@@ -120,7 +142,7 @@ Wynik trafia do `trace/probe.log` w katalogu logów. Pozostałe opcje to `--prob
 
 | Skrypt | Do czego |
 |---|---|
-| `tools/carin.py` | build, run, gui, chd, report |
+| `tools/carin.py` | build, run, gui, chd [NAZWA], report |
 | `tools/extract_cd.py [obraz] [katalog]` | wyciąga pliki z płyty (domyślnie do `temp/extracted_cd/`); raport używa stamtąd `loader.ini` do nazywania modułów |
 | `tools/carin_flash_modules.py state/installed [katalog]` | lista modułów OS-9 we flashu, opcjonalnie wyciąga je do katalogu |
 | `tools/unpack_os9.py plik katalog` | wyciąga moduły OS-9 z dowolnego pliku (np. `loader.ini`) |
