@@ -1,0 +1,820 @@
+// license:BSD-3-Clause
+// copyright-holders:Ryan Holtz
+/******************************************************************************
+
+    Philips CARiN Mk1/Mk2 navigation system (Renault Carminat)
+
+    68EC030 host running OS-9 with CD-i derived video (MCD212) and CD (CDIC)
+    hardware. Split out of the CD-i driver (philips/cdi.cpp); the CD-i consoles
+    and Quizard sets are not part of this tree.
+
+*******************************************************************************/
+
+
+#include "emu.h"
+#include "carin.h"
+
+#include "bus/rs232/rs232.h"
+#include "cpu/m6805/m6805.h"
+#include "imagedev/cdromimg.h"
+
+#include <string>
+#include "machine/mc68681.h"
+#include "machine/nvram.h"
+#include "machine/timekpr.h"
+#include "sound/cdda.h"
+
+#include <cstdio>
+
+#include "emupal.h"
+#include "screen.h"
+#include "softlist.h"
+#include "speaker.h"
+
+#include "cdrom.h"
+
+
+#include "cdi.lh"
+
+#define CLOCK_A 30_MHz_XTAL         // PAL system clock
+
+#define VERBOSE         (0)
+#include "logmacro.h"
+
+
+/*************************
+*      Input ports       *
+*************************/
+
+static INPUT_PORTS_START( carin )
+	PORT_START("MOUSEX")
+	PORT_BIT(0xffff, 0x000, IPT_MOUSE_X) PORT_SENSITIVITY(100) PORT_KEYDELTA(2)
+
+	PORT_START("MOUSEY")
+	PORT_BIT(0xffff, 0x000, IPT_MOUSE_Y) PORT_SENSITIVITY(100) PORT_KEYDELTA(2)
+
+	PORT_START("MOUSEBTN")
+	PORT_BIT(0x01, IP_ACTIVE_HIGH, IPT_BUTTON1) PORT_CODE(MOUSECODE_BUTTON1) PORT_NAME("Button 1")
+	PORT_BIT(0x02, IP_ACTIVE_HIGH, IPT_BUTTON2) PORT_CODE(MOUSECODE_BUTTON2) PORT_NAME("Button 2")
+	PORT_BIT(0x04, IP_ACTIVE_HIGH, IPT_BUTTON3) PORT_CODE(MOUSECODE_BUTTON3) PORT_NAME("Button 3")
+	PORT_BIT(0xf8, IP_ACTIVE_HIGH, IPT_UNUSED)
+
+	PORT_START("SERVICE")
+	PORT_CONFNAME( 0x01, 0x00, "Service mode" )
+	PORT_CONFSETTING(    0x00, DEF_STR( None ) )
+	PORT_CONFSETTING(    0x01, "Test plug (service shell)" )
+INPUT_PORTS_END
+
+
+void carin_state::carin_mem(address_map &map)
+{
+    // CARiN ROM z Renault Safrane (0x000000..0x00ffff)
+	// Boot flash: a single byte-wide 1 MB chip (the descriptors of flsh_boot/flsh_voice declare one
+	// 8-bit device, the 68030 sizes the bus dynamically). Bootrom at the bottom, the slave application
+	// flash (flsh_slave1) at 0xe0000.
+	map(0x000000, 0x0fffff).rw(m_bootflash, FUNC(amd_29f080_device::read), FUNC(amd_29f080_device::write));
+
+    // CDIC & Slave HLE
+    map(0x300000, 0x303bff).rw(m_cdic, FUNC(cdicdic_device::ram_r), FUNC(cdicdic_device::ram_w));
+    map(0x303c00, 0x303fff).rw(m_cdic, FUNC(cdicdic_device::regs_r), FUNC(cdicdic_device::regs_w));
+    map(0x310000, 0x317fff).rw(m_slave_hle, FUNC(cdislave_hle_device::slave_r), FUNC(cdislave_hle_device::slave_w));
+    map(0x320000, 0x323fff).rw("mk48t08", FUNC(timekeeper_device::read), FUNC(timekeeper_device::write)).umask16(0xff00);
+
+    // Video RAM (VRAM: 0x00600500) i VSC
+	// CARiN drives only the MCD212 channel 2 registers, so its display list at 0x600400 lives in plane B.
+	map(0x400000, 0x47ffff).rw(FUNC(carin_state::plane_r<0>), FUNC(carin_state::plane_w<0>));
+	map(0x600000, 0x67ffff).rw(FUNC(carin_state::plane_r<1>), FUNC(carin_state::plane_w<1>));
+
+	// Main system RAM (2 MiB)
+	map(0x800000, 0x9effff).ram();
+	map(0x9f0000, 0x9fffff).rw(FUNC(carin_state::carin_slave_r), FUNC(carin_state::carin_slave_w));
+	map(0xf00000, 0xf0003f).rw(FUNC(carin_state::carin_arcnet_r), FUNC(carin_state::carin_arcnet_w));
+
+    // Rejestry VSC / VDSC (MCD212): CARiN decodes them at 0x7fffe0, not at the CD-i address 0x4fffe0
+    map(0x7fffe0, 0x7fffff).m(m_mcd212, FUNC(mcd212_device::map));
+
+	map(0xc00000, 0xc0003f).rw(FUNC(carin_state::mcasic_r), FUNC(carin_state::mcasic_w));
+
+	// 8 KB byte-wide non-volatile memory holding the product ID block and the NVR disk; kept in nvram/carin/nv.
+	map(0xd00000, 0xd01fff).mirror(0xfe000).lrw8(
+			NAME([this] (offs_t offset)
+			{
+				if (m_maincpu->pc() >= 0x800000 && !machine().side_effects_disabled())
+					m_trace.nv(trace_time(), 'R', offset, m_nv[offset], m_maincpu->pc());
+				return m_nv[offset];
+			}),
+			NAME([this] (offs_t offset, uint8_t data)
+			{
+				if (m_maincpu->pc() >= 0x800000)
+					m_trace.nv(trace_time(), 'W', offset, data, m_maincpu->pc());
+				m_nv[offset] = data;
+			}));
+
+	// The 68EC030 accesses the DUART's 16 registers at byte stride.
+	map(0xe00000, 0xe0003f).rw(FUNC(carin_state::duart_r), FUNC(carin_state::duart_w));
+
+	// Main flash (OS-9 "flsh", 0x1200000-0x13fffff): flshdr detects four interleaved AMD 29F040.
+	for (unsigned i = 0; i < 4; i++)
+		map(0x1200000, 0x13fffff).rw(m_flash[i], FUNC(amd_29f040_device::read), FUNC(amd_29f040_device::write)).umask32(0xff000000 >> (8 * i));
+
+	// nonvol_dr probes for an optional NV extension here and catches the bus error when it is absent.
+	// Unmapped reads returning 0 make it mount a 32 KB blank partition that fails the NVR-DISK check.
+	map(0x1d00000, 0x1dfffff).lrw8(
+			NAME([this] (offs_t offset) -> uint8_t
+			{
+				if (!machine().side_effects_disabled())
+				{
+					m_maincpu->set_input_line(M68K_LINE_BUSERROR, ASSERT_LINE);
+					m_maincpu->set_input_line(M68K_LINE_BUSERROR, CLEAR_LINE);
+				}
+				return 0xff;
+			}),
+			NAME([this] (offs_t offset, uint8_t data)
+			{
+				m_maincpu->set_input_line(M68K_LINE_BUSERROR, ASSERT_LINE);
+				m_maincpu->set_input_line(M68K_LINE_BUSERROR, CLEAR_LINE);
+			}));
+}
+
+void carin_state::machine_start()
+{
+	save_item(NAME(m_mcasic_regs));
+	save_item(NAME(m_mcasic_reg12));
+	save_item(NAME(m_mcasic_mock_pending));
+	save_item(NAME(m_mcasic_mock_armed));
+	save_item(NAME(m_mcasic_mock_status));
+	save_item(NAME(m_mcasic_mock_phase));
+	save_item(NAME(m_mcasic_boot_status));
+	save_item(NAME(m_mcasic_boot_irq_pending));
+	save_item(NAME(m_slave_shared_ram));
+	save_item(NAME(m_nv));
+
+
+	// Channel A/B transmit output goes to uart_a.txt / uart_b.txt in the working directory, truncated every run.
+	m_uart_out[0].open("uart_a.txt", std::ios::binary | std::ios::trunc);
+	m_uart_out[1].open("uart_b.txt", std::ios::binary | std::ios::trunc);
+	m_trace.open();
+
+	m_pc_watch_timer = timer_alloc(FUNC(carin_state::pc_watch_tick), this);
+	m_pc_watch_timer->adjust(attotime::from_msec(250), 0, attotime::from_msec(250));
+
+	m_i2c_timer = timer_alloc(FUNC(carin_state::i2c_done), this);
+	save_item(NAME(m_i2c_result));
+	save_item(NAME(m_i2c_pending));
+	save_item(NAME(m_mbox_irq_channel));
+
+	m_tick_timer = timer_alloc(FUNC(carin_state::system_tick), this);
+	m_tick_timer->adjust(attotime::from_hz(100), 0, attotime::from_hz(100));
+	save_item(NAME(m_tick_enabled));
+
+	address_space &space = m_maincpu->space(AS_PROGRAM);
+	space.install_write_tap(0x7fffe0, 0x7fffff, "carin_vsc_regs_w",
+		[this](offs_t offset, uint32_t &data, uint32_t mem_mask)
+		{
+			m_trace.line(carin_trace::VIDEO, trace_time(), "W %06X=%08X mask=%08X pc=%06X", unsigned(offset * 4), data, mem_mask, m_maincpu->pc());
+		});
+	space.install_read_tap(0x7fffe0, 0x7fffff, "carin_vsc_regs_r",
+		[this](offs_t offset, uint32_t &data, uint32_t mem_mask)
+		{
+			m_trace.line(carin_trace::VIDEO, trace_time(), "R %06X=%08X mask=%08X pc=%06X", unsigned(offset * 4), data, mem_mask, m_maincpu->pc());
+		});
+}
+
+TIMER_CALLBACK_MEMBER(carin_state::system_tick)
+{
+	if (m_tick_enabled)
+		m_maincpu->set_input_line(M68K_IRQ_6, ASSERT_LINE);
+}
+
+TIMER_CALLBACK_MEMBER(carin_state::pc_watch_tick)
+{
+	m_trace.pc_sample(m_maincpu->pc());
+	m_trace.tick(trace_time());
+}
+
+uint32_t carin_state::mcasic_r(offs_t offset)
+{
+	if (offset == 0)
+	{
+		uint32_t value = m_mcasic_regs[0];
+		if (m_mcasic_boot_status)
+			value = (value & 0x00ffffff) | (uint32_t(m_mcasic_boot_status) << 24);
+		if (m_mbox_irq_channel)
+		{
+			// The mailbox ISRs (cddr_ipc, h_itc_dr...) read the channel here and latch it in 0x9F0000.
+			value = (value & 0x00ffffff) | (uint32_t(m_mbox_irq_channel) << 24);
+			if (!machine().side_effects_disabled())
+			{
+				m_mbox_irq_channel = 0;
+				update_level3_irq();
+			}
+		}
+		m_trace.count("mcasic_boot_status_reads");
+		return value;
+	}
+
+	if (offset == 3)
+		m_trace.count("mcasic_control_reads");
+
+	// C0001B: interrupt pending bits, bit 1 is the I2C controller.
+	if (offset == 6)
+		return m_mcasic_regs[6] | (m_i2c_pending ? 0x02 : 0x00);
+
+	if (offset == 9 && m_mcasic_mock_pending)
+	{
+		const uint32_t value = (m_mcasic_regs[9] & 0xffff0000) | m_mcasic_mock_status;
+		m_trace.line(carin_trace::MCASIC, trace_time(), "R C00026 mock status=%04X pc=%06X", m_mcasic_mock_status, m_maincpu->pc());
+		if (m_mcasic_mock_status != 0x0063)
+			m_mcasic_mock_pending = false;
+		return value;
+	}
+	if (offset == 10 && m_mcasic_mock_pending && m_mcasic_mock_status == 0x0063)
+	{
+		m_trace.line(carin_trace::MCASIC, trace_time(), "R C00028 mock response=01 pc=%06X", m_maincpu->pc());
+		m_mcasic_mock_pending = false;
+		return 1;
+	}
+
+	const uint32_t value = (offset == 4) ? (uint32_t(m_mcasic_reg12 | 0x10) << 8) : m_mcasic_regs[offset & 0x0f];
+	if (offset == 9)
+		m_trace.line(carin_trace::MCASIC, trace_time(), "R C00026 status=%04X pc=%06X", uint16_t(value), m_maincpu->pc());
+	return value;
+}
+
+void carin_state::mcasic_w(offs_t offset, uint32_t data, uint32_t mem_mask)
+{
+	const uint32_t byte_addr = uint32_t(offset & 0x0f) * 4;
+	if (offset == 4 && ACCESSING_BITS_8_15)
+	{
+		m_mcasic_reg12 = uint8_t(data >> 8) | 0x10;
+		// Any write acknowledges the tick; only OS-9 code (not the ROM) may enable it with bit 0.
+		m_maincpu->set_input_line(M68K_IRQ_6, CLEAR_LINE);
+		if (m_maincpu->pc() >= 0x800000)
+			m_tick_enabled = BIT(m_mcasic_reg12, 0);
+		m_trace.count("mcasic_tick_acks");
+		if (m_mcasic_reg12 & 0x03)
+			m_trace.count("mcasic_reg12_enable_writes");
+	}
+	else if (offset == 9 && ACCESSING_BITS_16_31 && m_maincpu->pc() >= 0x800000)
+		i2c_control_w(uint16_t(data >> 16));
+	else if (offset != 4)
+	{
+		const uint32_t old_value = m_mcasic_regs[offset & 0x0f];
+		COMBINE_DATA(&m_mcasic_regs[offset & 0x0f]);
+		// Byte +2 is the mailbox-busy flag: the master sets it, the slave clears it once the message is consumed.
+		if (offset == 0 && ACCESSING_BITS_8_15 && (m_mcasic_regs[0] & 0x0000ff00))
+		{
+			const uint8_t page = uint8_t(m_mcasic_regs[0] >> 8);
+			m_trace.line(carin_trace::MCASIC, trace_time(), "kick ch=%02X pc=%06X", page, m_maincpu->pc());
+			m_mcasic_regs[0] &= ~0x0000ff00;
+			carin_mailbox_kick(page);
+		}
+		if (offset == 3 && ACCESSING_BITS_0_7)
+		{
+			const bool irq_pulse = (uint8_t(m_mcasic_regs[3]) & 0x40) != 0;
+			if (!(uint8_t(old_value) & 0x40) && irq_pulse)
+				m_mcasic_boot_irq_pending = true;
+			else if ((uint8_t(old_value) & 0x40) && !irq_pulse && m_mcasic_boot_irq_pending)
+			{
+				m_mcasic_boot_status = 3;
+				m_mcasic_boot_irq_pending = false;
+				m_trace.line(carin_trace::MCASIC, trace_time(), "boot status -> 03 after control IRQ pulse pc=%06X", m_maincpu->pc());
+			}
+		}
+		if (offset == 8 || offset == 10)
+			m_mcasic_mock_armed = true;
+		if (offset == 9 && m_mcasic_mock_armed)
+		{
+			uint16_t response_status = 0;
+			if (m_mcasic_mock_phase == 0 && (m_mcasic_regs[9] & 0x00200000))
+				response_status = 0x0063;
+			else if (m_mcasic_mock_phase == 1 && (m_mcasic_regs[9] & 0x00800000))
+				response_status = 0x0383;
+			else if (m_mcasic_mock_phase == 2 && (m_mcasic_regs[9] & 0x00800000))
+				response_status = 0x0283;
+
+			if (response_status)
+			{
+				m_mcasic_mock_pending = true;
+				m_mcasic_mock_armed = false;
+				m_mcasic_mock_status = response_status;
+				m_mcasic_mock_phase++;
+
+				if (response_status == 0x0283)
+				{
+					const uint32_t buffer_address = m_mcasic_regs[8];
+					const bool low_ram = buffer_address >= 0x010000 && buffer_address < 0x080000;
+					const bool system_ram = buffer_address >= 0x800000 && buffer_address < 0xa00000;
+					if (low_ram || system_ram)
+						m_maincpu->space(AS_PROGRAM).write_byte(buffer_address, 0xff);
+				}
+
+				m_trace.line(carin_trace::MCASIC, trace_time(), "mock transaction phase=%u status=%04X pc=%06X",
+					m_mcasic_mock_phase, response_status, m_maincpu->pc());
+			}
+		}
+		if (offset == 7)
+			update_level3_irq();
+		if ((byte_addr == 0x1c) && (m_mcasic_regs[offset & 0x0f] != old_value))
+		{
+			m_trace.line(carin_trace::MCASIC, trace_time(), "W C0001C=%02X pc=%06X",
+				uint8_t(m_mcasic_regs[offset & 0x0f] >> 24), m_maincpu->pc());
+		}
+		else if (byte_addr >= 0x20 && byte_addr <= 0x2c)
+		{
+			m_trace.line(carin_trace::MCASIC, trace_time(), "W C000%02X=%08X mask=%08X", byte_addr, data, mem_mask);
+		}
+		if (offset == 3 && ACCESSING_BITS_0_7)
+			m_trace.line(carin_trace::MCASIC, trace_time(), "W C0000F=%02X pc=%06X", uint8_t(m_mcasic_regs[3]), m_maincpu->pc());
+	}
+}
+
+// HLE of the MCASIC I2C master used by vbi2csp2 (OS-9 only; the bootrom keeps the mock above).
+// C00020 DMA buffer, C00024 control, C00026 status, C00028 byte count, C0002A slave address.
+// Control bit 7 starts a write, bit 5 a read, bit 6 aborts and bit 2 acknowledges the interrupt;
+// these bits do not stick. Completion sets C0001B bit 1 and raises level 3 while C0001C bit 1 is set.
+// No device is modelled yet: every address ACKs, writes are dropped and reads return zeros.
+void carin_state::i2c_control_w(uint16_t data)
+{
+	if (BIT(data, 2))
+	{
+		m_i2c_pending = false;
+		update_level3_irq();
+	}
+	if (BIT(data, 6))
+		m_i2c_timer->adjust(attotime::never);
+
+	const uint32_t buffer = m_mcasic_regs[8];
+	const uint8_t count = uint8_t(m_mcasic_regs[10] >> 24);
+	const uint8_t address = uint8_t(m_mcasic_regs[10] >> 8);
+	address_space &space = m_maincpu->space(AS_PROGRAM);
+	if (BIT(data, 7))
+	{
+		char dump[2 * 16 + 1] = {};
+		for (unsigned i = 0; i < count && i < 16; i++)
+			std::snprintf(dump + i * 2, 3, "%02X", space.read_byte(buffer + i));
+		m_trace.line(carin_trace::MCASIC, trace_time(), "I2C write addr=%02X n=%u data=%s ctrl=%04X pc=%06X", address, count, dump, data, m_maincpu->pc());
+		// 0x383: write done with ACK; bit 8 asks for a repeated start, which completes as 0x283.
+		m_i2c_result = BIT(data, 8) ? 0x0283 : 0x0383;
+		m_i2c_timer->adjust(attotime::from_usec(100 * (count + 1)));
+	}
+	else if (BIT(data, 5))
+	{
+		for (unsigned i = 0; i < count; i++)
+			space.write_byte(buffer + i, 0x00);
+		m_trace.line(carin_trace::MCASIC, trace_time(), "I2C read addr=%02X n=%u ctrl=%04X pc=%06X", address, count, data, m_maincpu->pc());
+		m_i2c_result = 0x0042;
+		m_i2c_timer->adjust(attotime::from_usec(100 * (count + 1)));
+	}
+
+	m_mcasic_regs[9] = (m_mcasic_regs[9] & 0x0000ffff) | (uint32_t(data & ~0x00e4) << 16);
+}
+
+TIMER_CALLBACK_MEMBER(carin_state::i2c_done)
+{
+	// Status in C00026, nothing left in the byte counter.
+	m_mcasic_regs[9] = (m_mcasic_regs[9] & 0xffff0000) | m_i2c_result;
+	m_mcasic_regs[10] &= 0x00ffffff;
+	m_i2c_pending = true;
+	m_trace.line(carin_trace::MCASIC, trace_time(), "I2C done status=%04X", m_i2c_result);
+	update_level3_irq();
+}
+
+// Level 3 is shared by the I2C controller (gated by C0001C bit 1) and the slave mailbox, which
+// raises it with the channel number in C00000 until that register is read.
+void carin_state::update_level3_irq()
+{
+	const bool i2c = m_i2c_pending && BIT(m_mcasic_regs[7], 25);
+	m_maincpu->set_input_line(M68K_IRQ_3, (i2c || m_mbox_irq_channel) ? ASSERT_LINE : CLEAR_LINE);
+}
+
+uint32_t carin_state::carin_slave_r(offs_t offset, uint32_t mem_mask)
+{
+	const uint32_t byte_addr = 0x009f0000 + uint32_t(offset) * 4;
+	const uint32_t pc = m_maincpu->pc();
+	if (byte_addr >= 0x009fb6e0 && byte_addr <= 0x009fb700)
+	{
+		m_trace.count("shared_ram_handshake_reads");
+		return 0;
+	}
+
+	uint32_t response = m_slave_shared_ram[offset];
+	// Slave I/O state block at 0x9FA000, read bytewise by syscondr. Byte 8 is the key switch
+	// (ignition +12V), 1 = on; with 0 syscondr counts down and signals sysgo to power down (0x13F).
+	if (byte_addr == 0x009fa008)
+		response = (response & 0x00ffffff) | 0x01000000;
+	// HLE of the status page the slave application keeps for subsystem 0x88 (h_itc page 0x88):
+	// +2 service 0x81, +4 bit 1 "alive", +5 data length, data from +6. sysgo and start_slave poll
+	// data byte 0x14 until it reads 2 ("synchronised"); each failed poll leaks an h_itc path.
+	if (byte_addr >= 0x009f8800 && byte_addr < 0x009f8800 + 6 + 0x20)
+	{
+		static const uint8_t status_page[6 + 0x20] = {
+				0x00, 0x00, 0x81, 0x00, 0x02, 0x20,
+				0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+				0, 0, 0, 0, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+		const unsigned base = byte_addr - 0x009f8800;
+		for (unsigned i = 0; i < 4; i++)
+		{
+			const unsigned shift = 24 - 8 * i;
+			if (base + i < sizeof(status_page) && status_page[base + i])
+				response = (response & ~(uint32_t(0xff) << shift)) | (uint32_t(status_page[base + i]) << shift);
+		}
+	}
+	if (!machine().side_effects_disabled())
+		m_trace.ipc(trace_time(), 'R', byte_addr, response, pc);
+	return response;
+}
+
+void carin_state::carin_slave_w(offs_t offset, uint32_t data, uint32_t mem_mask)
+{
+	const uint32_t byte_addr = 0x009f0000 + uint32_t(offset) * 4;
+	const uint32_t pc = m_maincpu->pc();
+	COMBINE_DATA(&m_slave_shared_ram[offset]);
+	m_trace.ipc(trace_time(), 'W', byte_addr, m_slave_shared_ram[offset], pc);
+}
+
+// Minimal SMSC COM20020 (ARCNET) host interface; the remote node is answered by HLE in carin_arcnet_transmit().
+uint8_t carin_state::shared_byte(uint32_t offset) const
+{
+	return uint8_t(m_slave_shared_ram[(offset & 0xffff) >> 2] >> (24 - 8 * (offset & 3)));
+}
+
+void carin_state::set_shared_byte(uint32_t offset, uint8_t value)
+{
+	const unsigned shift = 24 - 8 * (offset & 3);
+	uint32_t &word = m_slave_shared_ram[(offset & 0xffff) >> 2];
+	word = (word & ~(uint32_t(0xff) << shift)) | (uint32_t(value) << shift);
+}
+
+// Slave side of the shared-RAM mailbox: the kick value is the channel; the channel table on page 0 gives its TX and RX pages.
+void carin_state::carin_mailbox_kick(uint8_t channel)
+{
+	const unsigned entry = 2 + unsigned(channel) * 6;
+	const uint32_t tx = shared_byte(entry + 1) * 0x100;
+	const uint32_t rx = shared_byte(entry + 3) * 0x100;
+	if (!tx || !rx || shared_byte(tx + 1) != 3)
+	{
+		m_trace.line(carin_trace::MAILBOX, trace_time(), "kick ch=%u nothing to serve tx=%04X rx=%04X", channel, tx, rx);
+		return;
+	}
+
+	const uint8_t type = shared_byte(tx + 2);
+	char dump[2 * 16 + 1] = {};
+	for (unsigned i = 0; i < 16; i++)
+		std::snprintf(dump + i * 2, 3, "%02X", shared_byte(tx + i));
+	m_trace.line(carin_trace::MAILBOX, trace_time(), "req ch=%u type=%u hdr+payload=%s dma=%08X len=%08X", channel, type, dump, m_mcasic_regs[1], m_mcasic_regs[2]);
+	m_trace.line(carin_trace::EVENTS, trace_time(), "mailbox req ch=%u type=%u", channel, type);
+
+	// The request is consumed; the master refuses to reuse the page until its state returns to 0.
+	set_shared_byte(tx + 1, 0);
+
+	auto reply = [this, channel, rx](uint8_t reply_type, const uint8_t *payload, unsigned length)
+	{
+		set_shared_byte(rx + 0, channel);
+		set_shared_byte(rx + 2, reply_type);
+		set_shared_byte(rx + 6, length >> 8);
+		set_shared_byte(rx + 7, length);
+		for (unsigned i = 0; i < length; i++)
+			set_shared_byte(rx + 8 + i, payload[i]);
+		set_shared_byte(rx + 1, 3);
+		m_trace.line(carin_trace::MAILBOX, trace_time(), "reply ch=%u type=%u len=%u", channel, reply_type, length);
+		// OS-9 drivers sleep until the slave interrupts; the bootrom polls instead.
+		if (m_maincpu->pc() >= 0x800000)
+		{
+			m_mbox_irq_channel = channel;
+			update_level3_irq();
+		}
+	};
+
+	// Only channel 3 is the CD drive (bootrom and cddr_ipc); 8 is h_ibus_dr and 9 is dc_dr, whose protocols are unknown.
+	if (channel != 3)
+	{
+		m_trace.line(carin_trace::EVENTS, trace_time(), "mailbox ch=%u type=%u acked without HLE", channel, type);
+		static const uint8_t status[2] = { 0x00, 0x00 };
+		reply(0, status, sizeof(status));
+	}
+	else if (type == 6)
+	{
+		// Drive status query: payload byte 2 in 0x0A..0x11 means "disc ready", which makes the ROM load nav_sw_load.
+		static const uint8_t status[4] = { 0x00, 0x00, 0x0a, 0x00 };
+		reply(type, status, sizeof(status));
+	}
+	else if (type == 2)
+	{
+		// Read request: [LBA][block count], data is DMAed by MCASIC to the address in +4 and the register is advanced.
+		const auto be32 = [this, tx](unsigned at)
+		{
+			return (uint32_t(shared_byte(tx + at)) << 24) | (uint32_t(shared_byte(tx + at + 1)) << 16)
+					| (uint32_t(shared_byte(tx + at + 2)) << 8) | shared_byte(tx + at + 3);
+		};
+		const uint32_t lba = be32(8);
+		const uint32_t count = be32(12);
+
+		uint32_t dest = m_mcasic_regs[1];
+		address_space &space = m_maincpu->space(AS_PROGRAM);
+		bool ok = true;
+
+		for (uint32_t block = 0; block < count && ok; block++)
+		{
+			uint8_t raw[2560] = {};
+			ok = m_cdrom->read_data(lba + block, raw, cdrom_file::CD_TRACK_RAW_DONTCARE);
+			const unsigned data_offset = (raw[15] == 1) ? 16 : 24;
+			for (unsigned i = 0; ok && i < 2048; i++)
+				space.write_byte(dest++, raw[data_offset + i]);
+		}
+
+		m_mcasic_regs[1] = dest;
+		m_trace.line(carin_trace::CDROM, trace_time(), "read lba=%u n=%u ok=%d dma_end=%08X", lba, count, ok, dest);
+		m_trace.line(carin_trace::EVENTS, trace_time(), "cd read lba=%u n=%u ok=%d", lba, count, ok);
+
+		const uint8_t status[2] = { uint8_t(ok ? 0x00 : 0x08), uint8_t(ok ? 0x00 : 0x03) };
+		reply(0, status, sizeof(status));
+	}
+	else if (type == 7 || type == 4)
+	{
+		// Experiment: 7 is sent by cddr_ipc at start-up, 4 (2-byte parameter, 0x0038 seen) when il opens
+		// a directory on /cd; their meaning is unknown, so they are acknowledged as OK.
+		m_trace.line(carin_trace::EVENTS, trace_time(), "cd type=%u param=%02X%02X acked", type, shared_byte(tx + 8), shared_byte(tx + 9));
+		static const uint8_t status[2] = { 0x00, 0x00 };
+		reply(0, status, sizeof(status));
+	}
+	else
+		m_trace.line(carin_trace::EVENTS, trace_time(), "mailbox type=%u NOT HANDLED", type);
+}
+
+uint8_t carin_state::carin_arcnet_r(offs_t offset)
+{
+	switch (offset & 7)
+	{
+	case 0: return m_arc_status;
+	case 1: return 0;
+	case 2: return (m_arc_ptr_hi & 0xc0) | (m_arc_address >> 8);
+	case 3: return m_arc_address & 0xff;
+	case 4:
+	{
+		const uint8_t data = m_arc_ram[m_arc_address];
+		if (!machine().side_effects_disabled() && (m_arc_ptr_hi & 0x40))
+			m_arc_address = (m_arc_address + 1) & 0x7ff;
+		return data;
+	}
+	case 5: return m_arc_subadr;
+	case 6: return m_arc_config;
+	default: return (m_arc_subadr == 1) ? m_arc_nodeid : 0;
+	}
+}
+
+void carin_state::carin_arcnet_w(offs_t offset, uint8_t data)
+{
+	switch (offset & 7)
+	{
+	case 0: m_arc_imr = data; break;
+	case 1: carin_arcnet_command(data); break;
+	case 2: m_arc_ptr_hi = data; break;
+	case 3: m_arc_address = ((m_arc_ptr_hi & 0x07) << 8) | data; break;
+	case 4:
+		m_arc_ram[m_arc_address] = data;
+		if (m_arc_ptr_hi & 0x40)
+			m_arc_address = (m_arc_address + 1) & 0x7ff;
+		break;
+	case 5: m_arc_subadr = data & 0x07; break;
+	case 6:
+		if (data & 0x80)
+			m_arc_status = 0x91;
+		m_arc_config = data;
+		m_arc_subadr = data & 0x03;
+		break;
+	default:
+		if (m_arc_subadr == 1)
+			m_arc_nodeid = data;
+		break;
+	}
+}
+
+void carin_state::carin_arcnet_command(uint8_t data)
+{
+	if ((data & 0x07) == 0x03)
+	{
+		m_arc_status &= ~0x03;
+		carin_arcnet_transmit((data >> 3) & 7);
+	}
+	else if ((data & 0x07) == 0x04)
+	{
+		m_arc_status &= ~0x80;
+		m_arc_rx_page = (data >> 3) & 7;
+	}
+	else if ((data & 0x07) == 0x06)
+	{
+		if (BIT(data, 3))
+			m_arc_status &= ~0x10;
+		if (BIT(data, 4))
+			m_arc_status &= ~0x04;
+	}
+}
+
+void carin_state::carin_arcnet_transmit(unsigned page)
+{
+	const unsigned base = page << 9;
+	const bool is_short = m_arc_ram[base + 2] != 0;
+	if (base + (is_short ? 0x100 : 0x200) > sizeof(m_arc_ram))
+		return;
+
+	const unsigned offset = is_short ? m_arc_ram[base + 2] : m_arc_ram[base + 3];
+	const unsigned length = (is_short ? 0x100 : 0x200) - offset;
+	const uint8_t *data = &m_arc_ram[base + offset];
+
+	char dump[2 * 40 + 1] = {};
+	for (unsigned i = 0; i < length && i < 40; i++)
+		std::snprintf(dump + i * 2, 3, "%02X", data[i]);
+	m_trace.line(carin_trace::ARCNET, trace_time(), "TX page=%u sid=%02X did=%02X len=%u data=%s pc=%06X",
+		page, m_arc_ram[base], m_arc_ram[base + 1], length, dump, m_maincpu->pc());
+
+	// The remote node always acknowledges.
+	m_arc_status |= 0x03;
+
+	// Frame type 0 is a request: answer with a final type 1 frame (header + error code + result, all success).
+	if (length < 8 || (data[0] >> 6) != 0 || (m_arc_status & 0x80))
+		return;
+
+	const unsigned rx_base = m_arc_rx_page << 9;
+	uint8_t *reply = &m_arc_ram[rx_base + 0x100 - 16];
+	m_arc_ram[rx_base + 0] = 0;
+	m_arc_ram[rx_base + 1] = m_arc_nodeid;
+	m_arc_ram[rx_base + 2] = 0x100 - 16;
+	std::fill_n(reply, 16, 0);
+	reply[0] = 0x60 | (data[0] & 0x0f);
+	reply[1] = data[1];
+	m_arc_status |= 0x80;
+	m_trace.line(carin_trace::ARCNET, trace_time(), "RX page=%u reply id=%02X", m_arc_rx_page, data[1]);
+}
+
+void carin_state::duart_w(offs_t offset, uint8_t data)
+{
+	offset &= 0x0f;
+	if (offset == 0x03 || offset == 0x0b)
+	{
+		const unsigned channel = (offset == 0x0b) ? 1 : 0;
+		static std::string tx_text[2];
+		tx_text[channel].push_back(char(data));
+		if (tx_text[channel].size() > 96)
+			tx_text[channel].erase(0, tx_text[channel].size() - 96);
+
+		if (tx_text[channel].find("Received unexpected request from node ") != std::string::npos)
+		{
+			const offs_t stack = m_maincpu->state_int(M68K_SP);
+			address_space &space = m_maincpu->space(AS_PROGRAM);
+			char stack_words[161];
+			for (unsigned index = 0; index < 32; index++)
+				std::snprintf(stack_words + index * 5, sizeof(stack_words) - index * 5,
+					"%04X%s", space.read_word(stack + index * 2), index == 31 ? "" : "/");
+			m_trace.line(carin_trace::EVENTS, trace_time(), "IPC error text seen pc=%06X sp=%08X stack=%s",
+				m_maincpu->pc(), uint32_t(stack), stack_words);
+			tx_text[channel].clear();
+		}
+
+		m_uart_out[channel].put(char(data));
+		m_uart_out[channel].flush();
+	}
+
+	if (offset != 0x03 && offset != 0x0b)
+	{
+		// IMR is rewritten on every character, so it is only counted.
+		if (offset == 0x05)
+			m_trace.count("duart_imr_writes");
+		else
+			m_trace.line(carin_trace::DUART, trace_time(), "W reg=%X val=%02X pc=%06X", offset, data, m_maincpu->pc());
+	}
+
+	m_duart->write(offset, data);
+}
+
+uint8_t carin_state::duart_r(offs_t offset)
+{
+	const uint8_t data = m_duart->read(offset & 0x0f);
+	if (!machine().side_effects_disabled())
+	{
+		static const char *const names[16] = { "duart_r0", "duart_r1_sra", "duart_r2", "duart_r3_rx", "duart_r4", "duart_r5_isr", "duart_r6", "duart_r7",
+			"duart_r8", "duart_r9", "duart_r10", "duart_r11", "duart_r12", "duart_r13", "duart_r14", "duart_r15" };
+		m_trace.count(names[offset & 0x0f]);
+	}
+	return data;
+}
+
+void carin_state::log_irq(const char *source, unsigned level, int state)
+{
+	static unsigned counts[8] = {};
+	if (!state)
+		return;
+	m_trace.count(source);
+	if (counts[level & 7]++ < 12)
+		m_trace.line(carin_trace::IRQ, trace_time(), "IRQ%u %s asserted pc=%06X", level, source, m_maincpu->pc());
+}
+
+void carin_state::duart_irq_w(int state)
+{
+	// The OS-9 term/console descriptors declare the DUART on level 2, autovector 26.
+	log_irq("duart", 2, state);
+	m_maincpu->set_input_line(M68K_IRQ_2, state ? ASSERT_LINE : CLEAR_LINE);
+}
+
+void carin_state::mcd_irq_w(int state)
+{
+	log_irq("mcd212", 1, state);
+	m_maincpu->set_input_line(M68K_IRQ_1, state ? ASSERT_LINE : CLEAR_LINE);
+}
+
+void carin_state::cdic_irq_w(int state)
+{
+	m_trace.count("irq4_cdic_unused");
+	m_maincpu->set_input_line(M68K_IRQ_4, state ? ASSERT_LINE : CLEAR_LINE);
+}
+
+template<int Channel>
+uint16_t carin_state::plane_r(offs_t offset, uint16_t mem_mask)
+{
+	m_maincpu->eat_cycles(m_mcd212->ram_dtack_cycle_count<Channel>());
+	return Channel ? m_plane_b[offset] : m_plane_a[offset];
+}
+
+template<int Channel>
+void carin_state::plane_w(offs_t offset, uint16_t data, uint16_t mem_mask)
+{
+	m_maincpu->eat_cycles(m_mcd212->ram_dtack_cycle_count<Channel>());
+	uint16_t &plane = Channel ? m_plane_b[offset] : m_plane_a[offset];
+	COMBINE_DATA(&plane);
+}
+
+// MAME models the 68EC030 with a 32-bit address bus, so the interrupt acknowledge space ends at 0xffffffff.
+// Every source is autovectored: DUART/ARCNET level 2 (26), MCASIC I2C/h_itc/dc level 3 (27), tick level 6.
+void carin_state::carin_cpu_space(address_map &map)
+{
+	map(0xfffffff0, 0xffffffff).m(m_maincpu, FUNC(m68ec030_device::autovectors_map));
+}
+
+void carin_state::carin(machine_config &config)
+{
+	M68EC030(config, m_maincpu, 16_MHz_XTAL);
+	m_maincpu->set_addrmap(AS_PROGRAM, &carin_state::carin_mem);
+	m_maincpu->set_addrmap(m68000_base_device::AS_CPU_SPACE, &carin_state::carin_cpu_space);
+
+	MCD212(config, m_mcd212, CLOCK_A, m_plane_a, m_plane_b);
+	m_mcd212->set_screen("screen");
+	m_mcd212->int_callback().set(FUNC(carin_state::mcd_irq_w));
+
+	screen_device &screen(SCREEN(config, "screen"));
+	screen.set_raw(14976000*2, 960, 0, 768, 312*2, 32*2, 312*2);
+	screen.set_video_attributes(VIDEO_UPDATE_SCANLINE);
+	screen.set_screen_update(m_mcd212, FUNC(mcd212_device::screen_update));
+
+	CDI220_LCD(config, m_lcd);
+	PALETTE(config, "palette").set_entries(0x100);
+	config.set_default_layout(layout_cdi);
+
+	CDI_CDIC(config, m_cdic, 45.1584_MHz_XTAL / 2);
+	m_cdic->set_clock2(45.1584_MHz_XTAL * 3 / 7);
+	m_cdic->intreq_callback().set(FUNC(carin_state::cdic_irq_w));
+
+	mc68681_device &duart(MC68681(config, m_duart, 3'686'400));
+	duart.irq_cb().set(FUNC(carin_state::duart_irq_w));
+	rs232_port_device &terminal_a(RS232_PORT(config, "terminal_a", default_rs232_devices, "terminal"));
+	rs232_port_device &terminal_b(RS232_PORT(config, "terminal_b", default_rs232_devices, "terminal"));
+	terminal_a.rxd_handler().set(m_duart, FUNC(mc68681_device::rx_a_w));
+	duart.a_tx_cb().set(terminal_a, FUNC(rs232_port_device::write_txd));
+	terminal_b.rxd_handler().set(m_duart, FUNC(mc68681_device::rx_b_w));
+	duart.b_tx_cb().set(terminal_b, FUNC(rs232_port_device::write_txd));
+	CDI_SLAVE_HLE(config, m_slave_hle);
+	// The CD-i slave HLE is unused by CARiN; its stuck IRQ2 would otherwise starve the OS-9 kernel.
+	m_slave_hle->atten_callback().set(m_cdic, FUNC(cdicdic_device::atten_w));
+	m_slave_hle->lcd_callback().set(m_lcd, FUNC(cdi220_lcd::state_w));
+	m_slave_hle->read_mousex().set_ioport("MOUSEX");
+	m_slave_hle->read_mousey().set_ioport("MOUSEY");
+	m_slave_hle->read_mousebtn().set_ioport("MOUSEBTN");
+	m_slave_hle->testplug_callback().set_ioport("SERVICE").bit(0);
+
+	CDROM(config, m_cdrom).set_interface("cdrom");
+	SOFTWARE_LIST(config, "cd_list").set_original("cdi");
+
+	SPEAKER(config, "speaker", 2).front();
+	DMADAC(config, m_dmadac[0]);
+	m_dmadac[0]->add_route(ALL_OUTPUTS, "speaker", 1.0, 0);
+	DMADAC(config, m_dmadac[1]);
+	m_dmadac[1]->add_route(ALL_OUTPUTS, "speaker", 1.0, 1);
+	MK48T08(config, "mk48t08");
+	NVRAM(config, "nv", nvram_device::DEFAULT_NONE).set_base(m_nv, sizeof(m_nv));
+	for (unsigned i = 0; i < 4; i++)
+		AMD_29F040(config, m_flash[i]);
+	AMD_29F080(config, m_bootflash);
+}
+
+ROM_START( carin )
+	// First-boot contents of the boot flash; later writes persist in nvram/carin/bootflash.
+	ROM_REGION( 0x100000, "bootflash", ROMREGION_ERASEFF )
+	ROM_LOAD( "bootrom_0209.bin", 0x000000, 0x10000, CRC(f8d1cd01) SHA1(a4fc348047a3c6ac5536403e979e09478d8c1dec) )
+
+	ROM_REGION( 0x2000, "nv", 0 )
+	ROM_LOAD( "nv.img", 0x0000, 0x2000, CRC(a7e7e5d6) SHA1(b1781f406936aab1a7db6c1f5d22ead08394c999) )
+
+ROM_END
+
+
+/*    YEAR  NAME   PARENT  COMPAT  MACHINE  INPUT  CLASS        INIT        COMPANY    FULLNAME */
+CONS( 1995, carin, 0, 0, carin, carin, carin_state, empty_init, "Philips", "CARiN Mk1/Mk2 Navigation System (Renault)", MACHINE_NOT_WORKING | MACHINE_IMPERFECT_GRAPHICS | MACHINE_IMPERFECT_SOUND )

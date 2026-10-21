@@ -1,0 +1,10 @@
+# Machine state (NV + flash) and MAME settings, see tools/carin.py
+/state/
+# Per-run logs and the build log
+/logs/
+# Scratch: extracted files, Ghidra projects, old notes
+/temp/
+# CD image data
+/cd/
+
+__pycache__/
