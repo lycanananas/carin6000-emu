@@ -38,6 +38,7 @@ public:
 		, m_dmadac(*this, "dac%u", 1U)
 		, m_flash(*this, "flash%u", 0U)
 		, m_bootflash(*this, "bootflash")
+		, m_bootflash2(*this, "bootflash2")
 		, m_car_input(*this, "CAR_KEYS")
 	{ }
 
@@ -45,6 +46,7 @@ public:
 
 private:
 	virtual void machine_start() override ATTR_COLD;
+	virtual void machine_reset() override ATTR_COLD;
 
 	required_device<m68ec030_device> m_maincpu;
 	required_device<cdi220_lcd> m_lcd;
@@ -62,8 +64,9 @@ private:
 	required_device_array<dmadac_sound_device, 2> m_dmadac;
 	// Main flash (flsh, nav software): four 29F040 on the byte lanes of the 32-bit bus.
 	required_device_array<amd_29f040_device, 4> m_flash;
-	// Boot flash (bootrom, flsh_boot, flsh_voice, flsh_slave1): one byte-wide chip at 0x000000.
-	required_device<amd_29f080_device> m_bootflash;
+	// Boot flash (bootrom, flsh_boot, flsh_voice, flsh_slave2): two byte-wide 1 MB chips at 0x000000.
+	required_device<amd_29f080_device> m_bootflash;    // 0x000000, bootrom at the bottom
+	required_device<amd_29f080_device> m_bootflash2;   // 0x100000, ends with flsh_slave2/flsh_hdr
 	uint32_t m_mcasic_regs[16] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00000040 };
 	uint8_t m_mcasic_reg12 = 0x10;
 	bool m_mcasic_mock_pending = false;
@@ -90,11 +93,16 @@ private:
 	emu_timer *m_car_input_timer = nullptr;
 	emu_timer *m_car_notify_timer = nullptr;
 	emu_timer *m_mbox_reply_timer = nullptr;
+	emu_timer *m_master_reset_timer = nullptr;
+	TIMER_CALLBACK_MEMBER(master_reset);
 	unsigned m_car_notifies = 0;           // "data available" announcements still to send
+	bool m_cd_driver_ready = false;        // cddr_ipc started (type 7 seen from OS-9)
+	int m_cd_reported = -1;                // drive state last reported: -1 not yet, 0 none, 1 ready, 2 spinning
+	attotime m_cd_spinup_until = attotime::zero;
+	bool mbox_post(uint8_t channel, uint8_t type, const uint8_t *payload, unsigned length);
 	static const uint8_t s_car_key_codes[13];
 	void car_frame(uint8_t src, uint8_t dst, uint8_t fn, uint8_t data);
 	void car_rc5(uint8_t code);
-	bool cd_boot_wanted();
 	TIMER_CALLBACK_MEMBER(car_input_poll);
 	TIMER_CALLBACK_MEMBER(car_notify_tick);
 	TIMER_CALLBACK_MEMBER(mbox_reply_irq);

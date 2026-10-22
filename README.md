@@ -63,13 +63,13 @@ tools/carin.py gui --state installed --cd carin_maps_pl_2012_2013   # nawigacja 
 tools/carin.py gui --state installed --cd ~/obrazy/inna_plyta.cue
 ```
 
-Bootrom przy ważnym flashu startuje z płyty tylko wtedy, gdy linia z ekspandera I/O (I2C 0x45, bit 1) jest niska. Emulator ustawia ją według opcji MAME „Boot from CD” (Tab → Machine Configuration): **Auto** (domyślnie) = każda płyta oprócz map (etykieta NAV_DB), **Always**, **Never**. Z płytą NAV_SW w napędzie IL wchodzi w „FORCED LOADING” i programuje flash od nowa, tak jak w prawdziwym urządzeniu. Nie zamykaj wtedy MAME w trakcie, bo zostanie połowiczny flash i pętla resetów (przywróć wtedy stan z kopii).
+Jak w aucie: z zainstalowanym softem urządzenie startuje z flasha także z płytą w napędzie, a o starcie z płyty decyduje sam soft. Płytę z oprogramowaniem (NAV_SW, zmiana języka) rozpoznaje działający system: ustawia w NV flagę sw-load, a po zamknięciu planszy „Attention!” się wyłącza. Gdy master skończy i powtarza prośbę o wyłączenie (MCASIC C0000F bit 7), slave go restartuje (emulator robi wtedy reset strony mastera), a bootrom widzi flagę i ładuje instalator z płyty. Na koniec IL wysuwa płytę i prosi o OK, potem kolejny restart i start z flasha.
 
 Uwaga: przy zainstalowanym flashu bootrom startuje dziś zawsze z flasha, nawet z płytą `NAV_SW` w napędzie. Na prawdziwym sprzęcie płyta ma pierwszeństwo, więc to jest do poprawienia.
 
 ## Stan maszyny: seed albo własny seed
 
-Stan to pliki w `state/<nazwa>/`: `nv` (8 KB NV), `flash0..3` (główny flash), `bootflash` (bootrom + flash slave'a) i `mk48t08`. Domyślna nazwa to `default`. Zamiast nazwy można podać ścieżkę. MAME pracuje bezpośrednio na tym katalogu, więc każde uruchomienie kontynuuje poprzednie.
+Stan to pliki w `state/<nazwa>/`: `nv` (8 KB NV), `flash0..3` (główny flash), `bootflash` i `bootflash2` (dwa układy flasha rozruchowego po 1 MB: bootrom, dane głosowe/językowe, flash slave'a) i `mk48t08`. Stany zainstalowane przed dodaniem `bootflash2` mają niepełne dane językowe: trzeba je zainstalować od nowa (`--seed` albo płyta NAV_SW). Domyślna nazwa to `default`. Zamiast nazwy można podać ścieżkę. MAME pracuje bezpośrednio na tym katalogu, więc każde uruchomienie kontynuuje poprzednie.
 
 **Z seeda** (`--seed`): flash jest pusty, NV pochodzi z `roms/carin/nv.img`. Bootrom nie znajdzie oprogramowania we flashu, więc załaduje instalator z CD i zaprogramuje flash (ok. 150 s czasu emulacji, a bez okna to kilka sekund).
 
@@ -115,7 +115,7 @@ tools/carin.py gui -- -resolution 1320x1248      # dodatkowe opcje MAME po "--"
 
 Otwiera się jedno okno (layout `mame/src/mame/layout/carin.lay`): u góry ekran nawigacji, obok panel z przyciskami do klikania myszką (PANEL: przyciski i pokrętło `<` PUSH `>`; SERVICE: autotest i nieużywane kody; CAR: miejsce na emulator auta), pod spodem konsola OS-9 (UART A). UART B ląduje tylko w `uart_b.txt`. Inne widoki (sama nawigacja, nawigacja z panelem, sama konsola) są w menu MAME (Tab → Video Options).
 
-Klawiatura: 1 Mute nav, 2 Last message, 3 VOL+, 4 VOL−, 5 wciśnięcie pokrętła, 7 Stand by, 8 Address book, ←/→ pokrętło; 6 i 9 uruchamiają autotest diagnostyczny; Q/W/E/R to kody nieobsługiwane przez soft. Nazwy i klawisze można zmienić w MAME (Tab → Input). Emulacja domyślnie idzie najszybciej, jak się da (`-nothrottle`); `--realtime` zwalnia ją do prędkości prawdziwego urządzenia. Scroll Lock przełącza klawiaturę między konsolą (pisanie w terminalu) a przyciskami emulatora.
+Klawiatura: 1 Mute nav, 2 Last message, 3 VOL+, 4 VOL−, 5 wciśnięcie pokrętła, 7 Stand by, 8 Address book, ←/→ pokrętło; 6 i 9 uruchamiają autotest diagnostyczny; Q/W/E/R to kody nieobsługiwane przez soft. Nazwy i klawisze można zmienić w MAME (Tab → Input). Emulacja domyślnie idzie najszybciej, jak się da (`-nothrottle`); `--realtime` zwalnia ją do prędkości prawdziwego urządzenia. Menu MAME (Tab) działa zawsze, `gui` uruchamia MAME z `-ui_active`. Płytę wkłada się w trakcie przez Tab → File Manager → cdrom (wyjęcie: „[empty slot]”).
 
 ## Logi
 

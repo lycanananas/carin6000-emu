@@ -31,10 +31,10 @@ LOG_ROOT = ROOT / "logs"
 MAME_CFG_DIR = STATE_ROOT / "_mame_cfg"
 SYSTEM = "carin"
 
-# Files MAME keeps per machine: nv (8 KB NV), flash0..3 (main flash), bootflash (bootrom + slave
-# flash) and mk48t08 (timekeeper). A missing file means "first boot": NV comes from roms/carin/nv.img,
+# Files MAME keeps per machine: nv (8 KB NV), flash0..3 (main flash), bootflash and bootflash2
+# (the two boot flash chips: bootrom, voice data, slave flash) and mk48t08 (timekeeper). A missing file means "first boot": NV comes from roms/carin/nv.img,
 # the boot flash from the bootrom, the main flash is erased.
-STATE_FILES = ("nv", "flash0", "flash1", "flash2", "flash3", "bootflash", "mk48t08")
+STATE_FILES = ("nv", "flash0", "flash1", "flash2", "flash3", "bootflash", "bootflash2", "mk48t08")
 
 
 def die(message):
@@ -257,7 +257,9 @@ def cmd_gui(args):
     # One window (layout carin.lay): navigation video, the clickable front panel and the OS-9
     # console on terminal A. Port B only goes to uart_b.txt.
     cmd = mame_command(state, log_dir, cd_image(args))
-    cmd += ["-window", "-nomaximize", "-view", "Navigation, panel and console"]
+    # -ui_active: the console has an emulated keyboard, which would otherwise take every key
+    # (Tab included) until the UI toggle key (Scroll Lock) is pressed.
+    cmd += ["-window", "-nomaximize", "-view", "Navigation, panel and console", "-ui_active"]
     cmd += speed_options(args)
     if args.debug:
         cmd += ["-debug"]

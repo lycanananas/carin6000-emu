@@ -652,7 +652,7 @@ uint32_t intelfsh_device::read_full(uint32_t address)
 		// reads outside of the erasing sector return normal data
 		if (
 			!(m_maker_id == MFG_FUJITSU && m_device_id == 0xad) /* Firebeat: pop'n music will poll sector 0 for status updates even when clearing section 1 and beyond */
-			&& !(m_maker_id == MFG_AMD && m_device_id == 0xa4) /* Am29F040 has no read-while-erase: every address returns the status (CARiN il polls another sector) */
+			&& !(m_maker_id == MFG_AMD && (m_device_id == 0xa4 || m_device_id == 0xd5)) /* Am29F040/080 have no read-while-erase: every address returns the status (CARiN il polls another sector) */
 			&& ((address < m_erase_sector) || (address >= m_erase_sector+(64*1024)))
 		)
 		{

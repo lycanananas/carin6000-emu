@@ -29,7 +29,7 @@ Jak to działa:
 tools/carin.py gui --state poc --load state/installed --cd carin_poc
 ```
 
-`--load` kopiuje stan, więc `state/installed` zostaje nietknięty. Ustawienie „Boot from CD” musi być na Auto albo Always.
+`--load` kopiuje stan, więc `state/installed` zostaje nietknięty. Płyta PoC to kopia NAV_SW, więc działa jak aktualizacja: włóż ją do działającej nawigacji, zamknij „Attention!”, soft ustawi flagę sw-load i się zrestartuje, a bootrom załaduje PoC.
 
 ## Na prawdziwym sprzęcie
 

@@ -87,20 +87,18 @@ static INPUT_PORTS_START( carin )
 	PORT_CONFNAME( 0x01, 0x00, "Service mode" )
 	PORT_CONFSETTING(    0x00, DEF_STR( None ) )
 	PORT_CONFSETTING(    0x01, "Test plug (service shell)" )
-	PORT_CONFNAME( 0x06, 0x00, "Boot from CD" )
-	PORT_CONFSETTING(    0x00, "Auto (disc that is not maps)" )
-	PORT_CONFSETTING(    0x02, "Always (disc in drive)" )
-	PORT_CONFSETTING(    0x04, "Never" )
 INPUT_PORTS_END
 
 
 void carin_state::carin_mem(address_map &map)
 {
     // CARiN ROM z Renault Safrane (0x000000..0x00ffff)
-	// Boot flash: a single byte-wide 1 MB chip (the descriptors of flsh_boot/flsh_voice declare one
-	// 8-bit device, the 68030 sizes the bus dynamically). Bootrom at the bottom, the slave application
-	// flash (flsh_slave1) at 0xe0000.
+	// Boot flash: two byte-wide 1 MB chips, 2 MB at 0x000000 (flsh_boot and flsh_voice span
+	// 0-0x1fffff; flshdr knows no 2 MB part). Bootrom at the bottom, voice/language data from 0x10000
+	// on, the slave application (flsh_slave2) and flsh_hdr (0x1efbe0, read by nonvol_dr) at the top of
+	// the second chip.
 	map(0x000000, 0x0fffff).rw(m_bootflash, FUNC(amd_29f080_device::read), FUNC(amd_29f080_device::write));
+	map(0x100000, 0x1fffff).rw(m_bootflash2, FUNC(amd_29f080_device::read), FUNC(amd_29f080_device::write));
 
     // CDIC & Slave HLE
     map(0x300000, 0x303bff).rw(m_cdic, FUNC(cdicdic_device::ram_r), FUNC(cdicdic_device::ram_w));
@@ -200,9 +198,12 @@ void carin_state::machine_start()
 	m_car_input_timer->adjust(attotime::from_msec(20), 0, attotime::from_msec(20));
 	save_item(NAME(m_car_input_last));
 	m_mbox_reply_timer = timer_alloc(FUNC(carin_state::mbox_reply_irq), this);
+	m_master_reset_timer = timer_alloc(FUNC(carin_state::master_reset), this);
 	m_car_notify_timer = timer_alloc(FUNC(carin_state::car_notify_tick), this);
 	m_car_notify_timer->adjust(attotime::from_msec(2), 0, attotime::from_msec(2));
 	save_item(NAME(m_car_notifies));
+	save_item(NAME(m_cd_driver_ready));
+	save_item(NAME(m_cd_reported));
 
 	m_tick_timer = timer_alloc(FUNC(carin_state::system_tick), this);
 	m_tick_timer->adjust(attotime::from_hz(100), 0, attotime::from_hz(100));
@@ -310,6 +311,18 @@ void carin_state::mcasic_w(offs_t offset, uint32_t data, uint32_t mem_mask)
 			m_mcasic_regs[0] &= ~0x0000ff00;
 			carin_mailbox_kick(page);
 		}
+		if (offset == 3 && ACCESSING_BITS_0_7 && (uint8_t(m_mcasic_regs[3]) & 0x80))
+		{
+			// C0000F bit 7: the master asks the slave to switch it off (after accepting a software disc,
+			// at the end of a software load, ...). The slave restarts it, which here is a reset of the
+			// master side; the delay lets the master finish its NV writes (the sw-load flag follows the
+			// request by a few ms). While waiting the master repeats the request every 3 s.
+			if (m_maincpu->pc() >= 0x800000 && m_master_reset_timer->remaining().is_never())
+			{
+				m_trace.line(carin_trace::EVENTS, trace_time(), "master asks to be switched off: slave restarts it in 2 s");
+				m_master_reset_timer->adjust(attotime::from_seconds(2));
+			}
+		}
 		if (offset == 3 && ACCESSING_BITS_0_7)
 		{
 			const bool irq_pulse = (uint8_t(m_mcasic_regs[3]) & 0x40) != 0;
@@ -346,10 +359,12 @@ void carin_state::mcasic_w(offs_t offset, uint32_t data, uint32_t mem_mask)
 					const uint32_t buffer_address = m_mcasic_regs[8];
 					const bool low_ram = buffer_address >= 0x010000 && buffer_address < 0x080000;
 					const bool system_ram = buffer_address >= 0x800000 && buffer_address < 0xa00000;
-					// Reads here are the I/O expander at 0x44/0x45. Bit 1 low makes the bootrom load from CD
-					// even with valid software in flash (bootrom $44a8), see cd_boot_wanted().
+					// Reads here are the I/O expander at 0x44/0x45. Bit 1 low would make the bootrom load from
+					// CD even with valid software in flash (bootrom $44a8); kept high, so like in the car the
+					// bootrom boots the flash unless the software set the sw-load flag ('G' in NV) for a
+					// software disc.
 					if (low_ram || system_ram)
-						m_maincpu->space(AS_PROGRAM).write_byte(buffer_address, cd_boot_wanted() ? 0xfd : 0xff);
+						m_maincpu->space(AS_PROGRAM).write_byte(buffer_address, 0xff);
 				}
 
 				m_trace.line(carin_trace::MCASIC, trace_time(), "mock transaction phase=%u status=%04X pc=%06X",
@@ -373,24 +388,6 @@ void carin_state::mcasic_w(offs_t offset, uint32_t data, uint32_t mem_mask)
 		if (offset == 3 && ACCESSING_BITS_0_7)
 			m_trace.line(carin_trace::MCASIC, trace_time(), "W C0000F=%02X pc=%06X", uint8_t(m_mcasic_regs[3]), m_maincpu->pc());
 	}
-}
-
-// The bootrom loads from CD when the I/O expander line (bit 1 at 0x45) is low; with it high it boots
-// valid software from flash and never looks at the drive. What drives the line in the car is not
-// known. Auto pulls it low for any disc except a map disc (volume NAV_DB), so a software disc
-// (NAV_SW, or a home-made bootable one) starts while maps still run the installed software.
-bool carin_state::cd_boot_wanted()
-{
-	const uint8_t mode = ioport("SERVICE")->read() & 0x06;
-	if (mode == 0x04 || !m_cdrom->exists())
-		return false;
-	if (mode == 0x02)
-		return true;
-	uint8_t raw[2560] = {};
-	if (!m_cdrom->read_data(16, raw, cdrom_file::CD_TRACK_RAW_DONTCARE))
-		return true;
-	const unsigned data_offset = (raw[15] == 1) ? 16 : 24;
-	return std::string_view(reinterpret_cast<const char *>(raw + data_offset + 40), 6) != "NAV_DB";
 }
 
 // HLE of the MCASIC I2C master used by vbi2csp2 (OS-9 only; the bootrom keeps the mock above).
@@ -659,9 +656,22 @@ void carin_state::carin_mailbox_kick(uint8_t channel)
 	}
 	else if (type == 7 || type == 4)
 	{
-		// Experiment: 7 is sent by cddr_ipc at start-up, 4 (2-byte parameter, 0x0038 seen) when il opens
-		// a directory on /cd; their meaning is unknown, so they are acknowledged as OK.
+		// 7 is sent by cddr_ipc at start-up. 4 carries a SetStat code of /cd (0x03, 0x34, 0x38, 0x39
+		// seen); only 0x34 (eject) is known, the others are acknowledged as OK.
 		m_trace.line(carin_trace::EVENTS, trace_time(), "cd type=%u param=%02X%02X acked", type, shared_byte(tx + 8), shared_byte(tx + 9));
+		if (type == 4 && shared_byte(tx + 8) == 0x00 && shared_byte(tx + 9) == 0x34 && m_cdrom->exists())
+		{
+			// 0x34 ejects the disc (il at the end of a software load); the state event follows.
+			m_trace.line(carin_trace::EVENTS, trace_time(), "cd eject");
+			m_cdrom->unload();
+		}
+		if (type == 7 && m_maincpu->pc() >= 0x800000)
+		{
+			// cddr_ipc has started: report the drive state to it (car_notify_tick).
+			m_cd_driver_ready = true;
+			m_cd_reported = -1;
+			m_cd_spinup_until = attotime::zero;
+		}
 		static const uint8_t status[2] = { 0x00, 0x00 };
 		reply(0, status, sizeof(status));
 	}
@@ -692,26 +702,104 @@ void carin_state::car_rc5(uint8_t code)
 	m_trace.line(carin_trace::EVENTS, trace_time(), "car rc5 %02X", code);
 }
 
+TIMER_CALLBACK_MEMBER(carin_state::master_reset)
+{
+	// NV and flash keep their contents, everything else starts over (machine_reset).
+	m_trace.line(carin_trace::EVENTS, trace_time(), "master reset by the slave");
+	machine().schedule_soft_reset();
+}
+
+// Power-on state of the glue logic and of the slave side; also used when the slave restarts the master.
+void carin_state::machine_reset()
+{
+	std::fill(std::begin(m_mcasic_regs), std::end(m_mcasic_regs), 0);
+	m_mcasic_regs[9] = 0x00000040;
+	m_mcasic_reg12 = 0x10;
+	m_mcasic_mock_pending = false;
+	m_mcasic_mock_armed = false;
+	m_mcasic_mock_status = 0x0040;
+	m_mcasic_mock_phase = 0;
+	m_mcasic_boot_status = 0;
+	m_mcasic_boot_irq_pending = false;
+	m_i2c_timer->adjust(attotime::never);
+	m_i2c_result = 0;
+	m_i2c_pending = false;
+	m_i2c_write_address = -1;
+	m_mbox_reply_timer->adjust(attotime::never);
+	m_master_reset_timer->adjust(attotime::never);
+	m_mbox_irq_channel = 0;
+	m_cdic_irq = false;
+	m_car_navbus_attention = false;
+	m_navbus_frames.clear();
+	m_car_chunks.clear();
+	m_car_notifies = 0;
+	m_cd_driver_ready = false;
+	m_cd_reported = -1;
+	std::fill(std::begin(m_slave_shared_ram), std::end(m_slave_shared_ram), 0);
+	std::fill(std::begin(m_arc_ram), std::end(m_arc_ram), 0);
+	m_arc_status = 0x91;
+	m_arc_imr = m_arc_config = m_arc_subadr = m_arc_nodeid = m_arc_ptr_hi = 0;
+	m_arc_address = 0;
+	m_arc_rx_page = 2;
+	m_tick_enabled = false;
+	for (int line = M68K_IRQ_1; line <= M68K_IRQ_7; line++)
+		m_maincpu->set_input_line(line, CLEAR_LINE);
+}
+
 TIMER_CALLBACK_MEMBER(carin_state::mbox_reply_irq)
 {
 	m_mbox_irq_channel = uint8_t(param);
 	update_level3_irq();
 }
 
+// An unsolicited message from the slave on a mailbox channel, when its reply page is free and no
+// other slave interrupt is pending. Returns false when it has to wait.
+bool carin_state::mbox_post(uint8_t channel, uint8_t type, const uint8_t *payload, unsigned length)
+{
+	const uint32_t rx = shared_byte(2 + channel * 6 + 3) * 0x100;
+	if (!rx || m_mbox_irq_channel || m_mbox_reply_timer->enabled() || shared_byte(rx + 1) == 3)
+		return false;
+	set_shared_byte(rx + 0, channel);
+	set_shared_byte(rx + 2, type);
+	set_shared_byte(rx + 6, length >> 8);
+	set_shared_byte(rx + 7, length);
+	for (unsigned i = 0; i < length; i++)
+		set_shared_byte(rx + 8 + i, payload[i]);
+	set_shared_byte(rx + 1, 3);
+	m_mbox_irq_channel = channel;
+	update_level3_irq();
+	return true;
+}
+
 TIMER_CALLBACK_MEMBER(carin_state::car_notify_tick)
 {
-	const uint32_t rx = shared_byte(2 + 8 * 6 + 3) * 0x100;
-	if (!m_car_notifies || !rx || m_mbox_irq_channel || m_mbox_reply_timer->enabled() || shared_byte(rx + 1) == 3)
+	// CD drive state (channel 3, type 6, byte 2: 0x0A and up = disc ready, 2 and below = no disc).
+	// cddr_ipc only learns about the disc from these events: once after its start-up request
+	// (type 7) and again whenever a disc is loaded or unloaded.
+	// A disc first reports spinning up (0x05) and is ready 1.5 s later: when it is loaded while
+	// running, and at start-up when the disc is already in the drive.
+	const int present = m_cdrom->exists() ? 1 : 0;
+	if (m_cd_driver_ready && present && m_cd_reported <= 0 && m_cd_spinup_until == attotime::zero)
+		m_cd_spinup_until = machine().time() + attotime::from_msec(1500);
+	const bool spinning = present && m_cd_spinup_until != attotime::zero && machine().time() < m_cd_spinup_until;
+	const int state = !present ? 0 : spinning ? 2 : 1;
+	if (m_cd_driver_ready && state != m_cd_reported)
+	{
+		const uint8_t status[4] = { 0x00, 0x00, uint8_t(state == 1 ? 0x0a : state == 2 ? 0x05 : 0x00), 0x00 };
+		if (mbox_post(3, 6, status, sizeof(status)))
+		{
+			m_trace.line(carin_trace::EVENTS, trace_time(), "cd status event: %s", state == 1 ? "disc ready" : state == 2 ? "spinning up" : "no disc");
+			m_cd_reported = state;
+			if (state != 2)
+				m_cd_spinup_until = attotime::zero;
+		}
 		return;
-	set_shared_byte(rx + 0, 8);
-	set_shared_byte(rx + 2, 6);
-	set_shared_byte(rx + 6, 0);
-	set_shared_byte(rx + 7, 1);
-	set_shared_byte(rx + 8, 1);
-	set_shared_byte(rx + 1, 3);
-	m_car_notifies--;
-	m_mbox_irq_channel = 8;
-	update_level3_irq();
+	}
+
+	// Channel 8 (/rc5): one "data available" announcement per queued chunk, see car_rc5().
+	static const uint8_t available[1] = { 1 };
+	if (m_car_notifies && mbox_post(8, 6, available, sizeof(available)))
+		m_car_notifies--;
 }
 
 TIMER_CALLBACK_MEMBER(carin_state::car_input_poll)
@@ -1038,6 +1126,7 @@ void carin_state::carin(machine_config &config)
 	for (unsigned i = 0; i < 4; i++)
 		AMD_29F040(config, m_flash[i]);
 	AMD_29F080(config, m_bootflash);
+	AMD_29F080(config, m_bootflash2);
 }
 
 ROM_START( carin )
