@@ -9,7 +9,8 @@ Stan: instalacja oprogramowania z CD do flasha przechodzi, start z flasha urucha
 | Katalog | Co jest w środku |
 |---|---|
 | `mame/` | Drzewo źródeł MAME przycięte do jednego sterownika: `src/mame/philips/carin.cpp` (+ `carin.h`, `carin_trace.h`) i urządzeń, których używa. Bazą jest upstream MAME, commit `b1f71f8f`. |
-| `roms/carin/` | `bootrom_0209.bin` (bootrom 2.09) i `nv.img` (seed pamięci NV). |
+| `roms/carin/` | `bootrom_0209.bin` (bootrom 2.21, sprzęt 0209) i `nv.img` (seed pamięci NV). |
+| `roms/carin0109/` | `bootrom_0109.bin` (bootrom 1.21 z płyty NAV_SW, `Mk2IC/0109`) i `nv.img` (seed NV z identyfikatorem `Mk2IC0109`). |
 | `cd/` | Obrazy płyt, nie są w repo (`.gitignore`): oprogramowanie `carin_nav_sw` i mapy, np. `carin_maps_pl_2012_2013` (`.chd` albo `.cue` + `.img`). Opis w [cd/README.md](cd/README.md). |
 | `tools/` | `carin.py` (budowanie i uruchamianie) oraz narzędzia analityczne. |
 | `docs/` | Notatki z reverse engineeringu. |
@@ -67,6 +68,18 @@ Jak w aucie: z zainstalowanym softem urządzenie startuje z flasha także z pły
 
 Uwaga: przy zainstalowanym flashu bootrom startuje dziś zawsze z flasha, nawet z płytą `NAV_SW` w napędzie. Na prawdziwym sprzęcie płyta ma pierwszeństwo, więc to jest do poprawienia.
 
+### Wypalanie na prawdziwą płytę
+
+Nagrywa się `cdrdao` z pliku `.cue` (obraz to jedna ścieżka MODE2/2352, więc zwykłe nagrywanie ISO nie zadziała), z katalogu `cd/`. `cdrdao` szuka `.img` z `.cue` względem bieżącego katalogu:
+
+```bash
+sudo pacman -S cdrdao
+cd cd
+cdrdao write --device /dev/sr0 NAZWA.cue
+```
+
+Obraz jest tylko jako CHD? Najpierw `chdman extractcd -i NAZWA.chd -o NAZWA.cue -ob NAZWA.img`. Płyta musi być czysta: nieudana próba zapisu psuje CD-R.
+
 ## Stan maszyny: seed albo własny seed
 
 Stan to pliki w `state/<nazwa>/`: `nv` (8 KB NV), `flash0..3` (główny flash), `bootflash` i `bootflash2` (dwa układy flasha rozruchowego po 1 MB: bootrom, dane głosowe/językowe, flash slave'a) i `mk48t08`. Stany zainstalowane przed dodaniem `bootflash2` mają niepełne dane językowe: trzeba je zainstalować od nowa (`--seed` albo płyta NAV_SW). Domyślna nazwa to `default`. Zamiast nazwy można podać ścieżkę. MAME pracuje bezpośrednio na tym katalogu, więc każde uruchomienie kontynuuje poprzednie.
@@ -86,6 +99,13 @@ tools/carin.py gui --load ~/carin_snapshots/po_instalacji --state proba         
 ```
 
 **Bez flag** stan jest kontynuowany, a jeśli katalog jest pusty, maszyna startuje jak z seeda.
+
+**Wariant sprzętu** (`--hw 0209` albo `--hw 0109`, domyślnie 0209). Płyta NAV_SW ma oprogramowanie dla dwóch wariantów: `Mk2IC/0209` i `Mk2IC/0109`, z osobnymi `loader.ini` (instalator) i `slave.apl`, a aplikacja jest wspólna. Wariant wynika z fabrycznego identyfikatora w NV (blok `phil_id`: `Mk2IC0209` albo `Mk2IC0109`): bootrom i IL budują z niego ścieżkę na płycie. Dla 0109 emulator uruchamia system MAME `carin0109` z bootromem 1.21 i seedem NV z `roms/carin0109/`. Stan zapamiętuje swój wariant w `state/<nazwa>/hw`, więc `--hw` podaje się tylko przy pierwszym uruchomieniu:
+
+```bash
+tools/carin.py run 300 --seed --hw 0109 --state hw0109   # instalacja na sprzęcie 0109
+tools/carin.py gui --state hw0109 --cd carin_maps_pl_2012_2013
+```
 
 | Opcja | Działanie |
 |---|---|

@@ -1297,6 +1297,20 @@ ROM_START( carin )
 
 ROM_END
 
+// The other hardware variant on the NAV_SW disc (Mk2IC/0109, bootrom "121198,1.21"; 0209 is "2.21").
+// The variant is the factory product id in NV (phil_id at 0 and its copy at 0x400: "Mk2IC0109"), from
+// which the bootrom and IL build the release path on the disc; its own loader.ini and slave.apl there,
+// the application software is shared. nv.img is the 0209 image with that id changed (and the
+// block checksum at +0x0a, the byte sum of the 0x1e bytes).
+ROM_START( carin0109 )
+	ROM_REGION( 0x100000, "bootflash", ROMREGION_ERASEFF )
+	ROM_LOAD( "bootrom_0109.bin", 0x000000, 0x10000, CRC(aac618fc) SHA1(0bff690eb161524a1c6c9368525b41fc664b2ad5) )
 
-/*    YEAR  NAME   PARENT  COMPAT  MACHINE  INPUT  CLASS        INIT        COMPANY    FULLNAME */
-CONS( 1995, carin, 0, 0, carin, carin, carin_state, empty_init, "Philips", "CARiN Mk1/Mk2 Navigation System (Renault)", MACHINE_NOT_WORKING | MACHINE_IMPERFECT_GRAPHICS | MACHINE_IMPERFECT_SOUND )
+	ROM_REGION( 0x2000, "nv", 0 )
+	ROM_LOAD( "nv.img", 0x0000, 0x2000, CRC(aeb509aa) SHA1(851582fe852f14eaaefaf5210046fab1ba385782) )
+ROM_END
+
+
+/*    YEAR  NAME       PARENT  COMPAT  MACHINE  INPUT  CLASS        INIT        COMPANY    FULLNAME */
+CONS( 1995, carin,     0,      0,      carin,   carin, carin_state, empty_init, "Philips", "CARiN Mk1/Mk2 Navigation System (Renault)", MACHINE_NOT_WORKING | MACHINE_IMPERFECT_GRAPHICS | MACHINE_IMPERFECT_SOUND )
+CONS( 1995, carin0109, carin,  0,      carin,   carin, carin_state, empty_init, "Philips", "CARiN Mk2 Navigation System (Renault, hardware 0109)", MACHINE_NOT_WORKING | MACHINE_IMPERFECT_GRAPHICS | MACHINE_IMPERFECT_SOUND )

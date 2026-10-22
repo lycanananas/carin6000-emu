@@ -68,29 +68,6 @@ os9_sleep:
 	moveq	#0,%d0
 	rts
 
-| int os9_send(int pid, int signal)
-	.globl	os9_send
-os9_send:
-	move.l	4(%sp),%d0
-	move.l	8(%sp),%d1
-	trap	#0
-	.short	0x0008			| F$Send
-	bcs.s	error
-	moveq	#0,%d0
-	rts
-
-| int os9_gprdsc(int pid, void *buf, int size): copies the process descriptor
-	.globl	os9_gprdsc
-os9_gprdsc:
-	move.l	4(%sp),%d0
-	move.l	8(%sp),%a0
-	move.l	12(%sp),%d1
-	trap	#0
-	.short	0x0018			| F$GPrDsc
-	bcs.s	error
-	moveq	#0,%d0
-	rts
-
 error:
 	moveq	#0,%d0
 	move.w	%d1,%d0

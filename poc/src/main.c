@@ -1,5 +1,6 @@
 /*
- * CARiN PoC: started from CD in place of the installer (module "il"); never touches the flash.
+ * CARiN PoC: started from CD in place of the installer's UI (module "ui_handler"; the disc's "il"
+ * is a stub that only sleeps, src/il_stub.S), so nothing touches the flash.
  * Draws a big HELLO WORLD into the frame buffer set up by videodr, counts panel key presses read
  * from /nav_bus (frames 3A 3B 48 <code> for keys, 3A 3B 49 <steps> for the knob) and logs to the
  * console (UART A).
@@ -14,8 +15,6 @@ int os9_read(int path, void *buf, int count);
 int os9_writeln(int path, const void *buf, int count);
 int os9_ready(int path);
 int os9_sleep(int ticks);
-int os9_send(int pid, int signal);
-int os9_gprdsc(int pid, void *buf, int size);
 
 #define STDOUT 1
 #define E_NOTRDY 0xf6
@@ -100,45 +99,6 @@ static char *str_cat(char *p, const char *s)
 		*p++ = *s++;
 	*p = 0;
 	return p;
-}
-
-static int str_eq(const char *a, const char *b)
-{
-	while (*a && *a == *b)
-		a++, b++;
-	return *a == *b;
-}
-
-/*
- * Kills the processes running the named module. The process descriptor layout is not needed:
- * any long in it that points at a module header (sync 0x4afc) with this name is its module.
- */
-static int kill_module(const char *name)
-{
-	unsigned char desc[0x200];
-	int killed = 0;
-	for (int pid = 2; pid < 64; pid++) {
-		if (os9_gprdsc(pid, desc, sizeof(desc)) < 0)
-			continue;
-		for (unsigned i = 0; i + 4 <= sizeof(desc); i += 2) {
-			unsigned ptr = (desc[i] << 24) | (desc[i + 1] << 16) | (desc[i + 2] << 8) | desc[i + 3];
-			if (ptr < 0x800000 || ptr >= 0x9f0000 || (ptr & 1))
-				continue;
-			const unsigned char *mod = (const unsigned char *)ptr;
-			if (mod[0] != 0x4a || mod[1] != 0xfc)
-				continue;
-			unsigned name_off = (mod[12] << 24) | (mod[13] << 16) | (mod[14] << 8) | mod[15];
-			if (name_off < 0x30 || name_off > 0x100000 || !str_eq((const char *)mod + name_off, name))
-				continue;
-			char line[48];
-			fmt_int(str_cat(str_cat(str_cat(line, "killing "), name), " pid "), pid, 0);
-			log_line(line);
-			os9_send(pid, 0);	/* S$Kill */
-			killed++;
-			break;
-		}
-	}
-	return killed;
 }
 
 /* Finds the frame buffer: the first "load VSR" instruction of videodr's display program. */
@@ -349,8 +309,6 @@ int main(void)
 
 	log_line("");
 	log_line("*** CARiN PoC: hello world from CD (flash untouched) ***");
-	/* The installer's UI process keeps signalling sysgo ("unexpected signal"); not needed here. */
-	kill_module("ui_handler");
 
 	unsigned vsr = find_vsr();
 	s.fb = VSC_DRAM + vsr;

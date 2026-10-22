@@ -29,7 +29,10 @@ CD_NAME = "carin_nav_sw"
 STATE_ROOT = ROOT / "state"
 LOG_ROOT = ROOT / "logs"
 MAME_CFG_DIR = STATE_ROOT / "_mame_cfg"
-SYSTEM = "carin"
+# Hardware variant -> MAME system. The NAV_SW disc carries software for both (Mk2IC/0109, Mk2IC/0209);
+# the variant is remembered in state/<name>/hw.
+SYSTEMS = {"0209": "carin", "0109": "carin0109"}
+DEFAULT_HW = "0209"
 
 # Files MAME keeps per machine: nv (8 KB NV), flash0..3 (main flash), bootflash and bootflash2
 # (the two boot flash chips: bootrom, voice data, slave flash) and mk48t08 (timekeeper). A missing file means "first boot": NV comes from roms/carin/nv.img,
@@ -59,15 +62,29 @@ def seed_state(directory):
 
 def copy_state(src, dst):
     src = Path(src)
-    if (src / SYSTEM).is_dir():   # also accept a MAME nvram directory
-        src = src / SYSTEM
+    for system in SYSTEMS.values():   # also accept a MAME nvram directory
+        if (src / system).is_dir():
+            src = src / system
+            break
     found = [f for f in STATE_FILES if (src / f).is_file()]
     if not found:
         die(f"{src} holds no state files ({', '.join(STATE_FILES)})")
     dst.mkdir(parents=True, exist_ok=True)
     for f in found:
         shutil.copy2(src / f, dst / f)
+    if (src / "hw").is_file():
+        shutil.copy2(src / "hw", dst / "hw")
     return found
+
+
+def state_hw(directory, wanted):
+    """The hardware variant of a state: --hw, else what the state remembers, else 0209."""
+    stored = (directory / "hw").read_text().strip() if (directory / "hw").is_file() else None
+    if wanted and stored and wanted != stored and any((directory / f).exists() for f in STATE_FILES):
+        print(f"warning: state {directory.name} was made on hardware {stored}, running it as {wanted}")
+    hw = wanted or stored or DEFAULT_HW
+    (directory / "hw").write_text(hw + "\n")
+    return hw
 
 
 def prepare_state(args):
@@ -84,6 +101,9 @@ def prepare_state(args):
         print(f"state {directory}: empty, first boot from seed")
     else:
         print(f"state {directory}: continuing")
+    args.system = SYSTEMS[state_hw(directory, args.hw)]
+    if args.system != SYSTEMS[DEFAULT_HW]:
+        print(f"hardware: {args.system}")
     return directory
 
 
@@ -147,15 +167,15 @@ def new_log_dir(mode, state):
     return directory
 
 
-def mame_command(state, log_dir, cdrom):
+def mame_command(state, log_dir, cdrom, system):
     # MAME runs inside the log directory: the driver writes uart_a.txt, uart_b.txt and trace/ to
-    # its working directory. The machine state is reached through nvram/carin -> state/<name>.
+    # its working directory. The machine state is reached through nvram/<system> -> state/<name>.
     nvram = log_dir / "nvram"
     nvram.mkdir()
-    (nvram / SYSTEM).symlink_to(state)
+    (nvram / system).symlink_to(state)
     MAME_CFG_DIR.mkdir(parents=True, exist_ok=True)
     return [
-        str(MAME_BIN), SYSTEM,
+        str(MAME_BIN), system,
         "-rompath", str(ROM_DIR),
         "-hashpath", str(MAME_DIR / "hash"),
         "-pluginspath", str(MAME_DIR / "plugins"),
@@ -227,7 +247,7 @@ def cmd_run(args):
     check_binary()
     state = prepare_state(args)
     log_dir = new_log_dir("run", state)
-    cmd = mame_command(state, log_dir, cd_image(args))
+    cmd = mame_command(state, log_dir, cd_image(args), args.system)
     cmd += ["-seconds_to_run", str(args.seconds), "-video", "none", "-sound", "none"]
     cmd += speed_options(args)
     env = trace_env(args)
@@ -256,7 +276,7 @@ def cmd_gui(args):
     log_dir = new_log_dir("gui", state)
     # One window (layout carin.lay): navigation video, the clickable front panel and the OS-9
     # console on terminal A. Port B only goes to uart_b.txt.
-    cmd = mame_command(state, log_dir, cd_image(args))
+    cmd = mame_command(state, log_dir, cd_image(args), args.system)
     # -ui_active: the console has an emulated keyboard, which would otherwise take every key
     # (Tab included) until the UI toggle key (Scroll Lock) is pressed.
     cmd += ["-window", "-nomaximize", "-view", "Navigation, panel and console", "-ui_active"]
@@ -301,6 +321,7 @@ def add_state_options(p):
     mode.add_argument("--load", metavar="DIR",
                       help="replace the state with the snapshot in DIR (your own seed), then start")
     g.add_argument("--save-to", metavar="DIR", help="copy the state to DIR after the run")
+    g.add_argument("--hw", choices=sorted(SYSTEMS), help="hardware variant (default: the state's, else 0209)")
     c = p.add_argument_group("disc").add_mutually_exclusive_group()
     c.add_argument("--cd", metavar="PATH",
                    help=f"disc in the drive: a name from cd/ (NAME.chd or NAME.cue) or a path to an image "
