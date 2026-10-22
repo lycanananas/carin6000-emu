@@ -39,6 +39,8 @@ public:
 		, m_flash(*this, "flash%u", 0U)
 		, m_bootflash(*this, "bootflash")
 		, m_bootflash2(*this, "bootflash2")
+		, m_car_controls(*this, "CAR")
+		, m_ignition_led(*this, "ignition")
 		, m_car_input(*this, "CAR_KEYS")
 	{ }
 
@@ -84,7 +86,12 @@ private:
 
 	// Car side (HLE): what the car around the unit answers. Fixed for now; meant to be driven by a
 	// car emulator window later (ignition, nav bus display, ...).
-	bool m_car_ignition = true;            // key switch / +12V after ignition, reported by the slave
+	required_ioport m_car_controls;        // CAR: ignition key (press to turn it over)
+	bool m_ignition_on = true;             // key switch / +12V after ignition, reported by the slave
+	uint32_t m_car_controls_last = 0;
+	output_finder<> m_ignition_led;        // layout: IGNITION ON/OFF
+	bool car_ignition() const { return m_ignition_on; }
+	bool m_powered_off = false;            // the slave has cut the power (ignition off)
 	bool m_car_navbus_attention = false;   // the nav bus display (I2C 0x50) asks to be read
 	required_ioport m_car_input;           // panel keys and knob, see s_car_key_codes
 	uint32_t m_car_input_last = 0;

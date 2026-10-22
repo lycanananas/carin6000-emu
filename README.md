@@ -115,6 +115,8 @@ tools/carin.py gui -- -resolution 1320x1248      # dodatkowe opcje MAME po "--"
 
 Otwiera się jedno okno (layout `mame/src/mame/layout/carin.lay`): u góry ekran nawigacji, obok panel z przyciskami do klikania myszką (PANEL: przyciski i pokrętło `<` PUSH `>`; SERVICE: autotest i nieużywane kody; CAR: miejsce na emulator auta), pod spodem konsola OS-9 (UART A). UART B ląduje tylko w `uart_b.txt`. Inne widoki (sama nawigacja, nawigacja z panelem, sama konsola) są w menu MAME (Tab → Video Options).
 
+Zapłon: przycisk IGNITION w sekcji CAR panelu albo klawisz **I** (przełącznik). Po wyłączeniu system po ok. 25 s zapisuje ustawienia do NV i się wyłącza, a slave odcina zasilanie (czarny ekran). Ponowne włączenie zapłonu uruchamia urządzenie. Tak wymusza się zapis ustawień przed zamknięciem MAME.
+
 Klawiatura: 1 Mute nav, 2 Last message, 3 VOL+, 4 VOL−, 5 wciśnięcie pokrętła, 7 Stand by, 8 Address book, ←/→ pokrętło; 6 i 9 uruchamiają autotest diagnostyczny; Q/W/E/R to kody nieobsługiwane przez soft. Nazwy i klawisze można zmienić w MAME (Tab → Input). Emulacja domyślnie idzie najszybciej, jak się da (`-nothrottle`); `--realtime` zwalnia ją do prędkości prawdziwego urządzenia. Menu MAME (Tab) działa zawsze, `gui` uruchamia MAME z `-ui_active`. Płytę wkłada się w trakcie przez Tab → File Manager → cdrom (wyjęcie: „[empty slot]”).
 
 ## Logi

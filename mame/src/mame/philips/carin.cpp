@@ -83,6 +83,10 @@ static INPUT_PORTS_START( carin )
 	PORT_BIT(0x04, IP_ACTIVE_HIGH, IPT_BUTTON3) PORT_CODE(MOUSECODE_BUTTON3) PORT_NAME("Button 3")
 	PORT_BIT(0xf8, IP_ACTIVE_HIGH, IPT_UNUSED)
 
+	// Car side: key switch. Each press turns the ignition over (on at start-up, see car_input_poll).
+	PORT_START("CAR")
+	PORT_BIT(0x01, IP_ACTIVE_HIGH, IPT_OTHER) PORT_NAME("Ignition on/off") PORT_CODE(KEYCODE_I)
+
 	PORT_START("SERVICE")
 	PORT_CONFNAME( 0x01, 0x00, "Service mode" )
 	PORT_CONFSETTING(    0x00, DEF_STR( None ) )
@@ -193,7 +197,10 @@ void carin_state::machine_start()
 	save_item(NAME(m_i2c_pending));
 	save_item(NAME(m_i2c_write_address));
 	save_item(NAME(m_cdic_irq));
-	save_item(NAME(m_car_ignition));
+	save_item(NAME(m_powered_off));
+	save_item(NAME(m_ignition_on));
+	save_item(NAME(m_car_controls_last));
+	m_ignition_led = m_ignition_on ? 1 : 0;
 	save_item(NAME(m_car_navbus_attention));
 	save_item(NAME(m_mbox_irq_channel));
 
@@ -316,13 +323,13 @@ void carin_state::mcasic_w(offs_t offset, uint32_t data, uint32_t mem_mask)
 		}
 		if (offset == 3 && ACCESSING_BITS_0_7 && (uint8_t(m_mcasic_regs[3]) & 0x80))
 		{
-			// C0000F bit 7: the master asks the slave to switch it off (after accepting a software disc,
-			// at the end of a software load, ...). The slave restarts it, which here is a reset of the
-			// master side; the delay lets the master finish its NV writes (the sw-load flag follows the
-			// request by a few ms). While waiting the master repeats the request every 3 s.
+			// C0000F bit 7: the master asks the slave to switch it off (ignition off, after accepting a
+			// software disc, at the end of a software load, ...). See master_reset; the delay lets the
+			// master finish its NV writes (the sw-load flag follows the request by a few ms). While
+			// waiting the master repeats the request every 3 s.
 			if (m_maincpu->pc() >= 0x800000 && m_master_reset_timer->remaining().is_never())
 			{
-				m_trace.line(carin_trace::EVENTS, trace_time(), "master asks to be switched off: slave restarts it in 2 s");
+				m_trace.line(carin_trace::EVENTS, trace_time(), "master asks to be switched off: slave acts in 2 s (restart, or power off with the ignition off)");
 				m_master_reset_timer->adjust(attotime::from_seconds(2));
 			}
 		}
@@ -515,7 +522,7 @@ uint32_t carin_state::carin_slave_r(offs_t offset, uint32_t mem_mask)
 	// Car side: slave I/O state block at 0x9FA000, read bytewise by syscondr. Byte 8 is the key switch
 	// (ignition +12V), 1 = on; with 0 syscondr counts down and signals sysgo to power down (0x13F).
 	if (byte_addr == 0x009fa008)
-		response = (response & 0x00ffffff) | (uint32_t(m_car_ignition ? 1 : 0) << 24);
+		response = (response & 0x00ffffff) | (uint32_t(car_ignition() ? 1 : 0) << 24);
 	// HLE of the status page the slave application keeps for subsystem 0x88 (h_itc page 0x88):
 	// +2 service 0x81, +4 bit 1 "alive", +5 data length, data from +6. sysgo and start_slave poll
 	// data byte 0x14 until it reads 2 ("synchronised"); each failed poll leaks an h_itc path.
@@ -707,7 +714,16 @@ void carin_state::car_rc5(uint8_t code)
 
 TIMER_CALLBACK_MEMBER(carin_state::master_reset)
 {
-	// NV and flash keep their contents, everything else starts over (machine_reset).
+	// With the ignition off the slave cuts the power instead (the unit stays off until the ignition
+	// comes back, see car_input_poll); with it on it restarts the master. NV and flash keep their
+	// contents, everything else starts over (machine_reset).
+	if (!car_ignition())
+	{
+		m_trace.line(carin_trace::EVENTS, trace_time(), "ignition off: slave switches the unit off");
+		m_powered_off = true;
+		m_maincpu->set_input_line(INPUT_LINE_RESET, ASSERT_LINE);
+		return;
+	}
 	m_trace.line(carin_trace::EVENTS, trace_time(), "master reset by the slave");
 	machine().schedule_soft_reset();
 }
@@ -807,6 +823,26 @@ TIMER_CALLBACK_MEMBER(carin_state::car_notify_tick)
 
 TIMER_CALLBACK_MEMBER(carin_state::car_input_poll)
 {
+	// The ignition key: every press turns it over; the layout shows it through the "ignition" output.
+	const uint32_t controls = m_car_controls->read();
+	if (BIT(controls & ~m_car_controls_last, 0))
+	{
+		m_ignition_on = !m_ignition_on;
+		m_ignition_led = m_ignition_on ? 1 : 0;
+		m_trace.line(carin_trace::EVENTS, trace_time(), "ignition %s", m_ignition_on ? "on" : "off");
+	}
+	m_car_controls_last = controls;
+
+	// Ignition back on while the unit is switched off: the slave powers it up again.
+	if (m_powered_off && car_ignition())
+	{
+		m_trace.line(carin_trace::EVENTS, trace_time(), "ignition on: slave switches the unit on");
+		m_powered_off = false;
+		m_maincpu->set_input_line(INPUT_LINE_RESET, CLEAR_LINE);
+		machine().schedule_soft_reset();
+		return;
+	}
+
 	// Panel keys send 3A->3B fn 0x48 <code> when pressed; the knob sends fn 0x49 with one step,
 	// bit 6 set for the negative direction.
 	const uint32_t keys = m_car_input->read();
@@ -1047,6 +1083,11 @@ void carin_state::placeholder_palette(palette_device &palette) const
 
 uint32_t carin_state::screen_update(screen_device &screen, bitmap_rgb32 &bitmap, const rectangle &cliprect)
 {
+	if (m_powered_off)
+	{
+		bitmap.fill(0, cliprect);
+		return 0;
+	}
 	const unsigned width = std::min<unsigned>(m_vsc->width(), 768);
 	uint8_t buffer[768];
 	for (int y = cliprect.min_y; y <= cliprect.max_y; y++)
