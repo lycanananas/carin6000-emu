@@ -12,7 +12,8 @@ license:CC0-1.0
 	</element>
 	<element name="t_mute_nav"><text string="Mute nav"><color red="0.95" green="0.95" blue="0.95" /></text></element>
 	<element name="t_last_message"><text string="Last message"><color red="0.95" green="0.95" blue="0.95" /></text></element>
-	<element name="t_vol__"><text string="VOL +"><color red="0.95" green="0.95" blue="0.95" /></text></element>
+	<element name="t_vol_plus"><text string="VOL +"><color red="0.95" green="0.95" blue="0.95" /></text></element>
+	<element name="t_vol_minus"><text string="VOL -"><color red="0.95" green="0.95" blue="0.95" /></text></element>
 	<element name="t_stand_by"><text string="Stand by"><color red="0.95" green="0.95" blue="0.95" /></text></element>
 	<element name="t_address_book"><text string="Address book"><color red="0.95" green="0.95" blue="0.95" /></text></element>
 	<element name="t_left"><text string="&lt;"><color red="0.95" green="0.95" blue="0.95" /></text></element>
@@ -39,9 +40,9 @@ license:CC0-1.0
 		<element ref="key" inputtag="CAR_KEYS" inputmask="0x0002"><bounds x="84" y="22" width="76" height="28" /></element>
 		<element ref="t_last_message"><bounds x="86" y="29" width="72" height="14" /></element>
 		<element ref="key" inputtag="CAR_KEYS" inputmask="0x0004"><bounds x="0" y="56" width="76" height="28" /></element>
-		<element ref="t_vol__"><bounds x="2" y="63" width="72" height="14" /></element>
+		<element ref="t_vol_plus"><bounds x="2" y="63" width="72" height="14" /></element>
 		<element ref="key" inputtag="CAR_KEYS" inputmask="0x0008"><bounds x="84" y="56" width="76" height="28" /></element>
-		<element ref="t_vol__"><bounds x="86" y="63" width="72" height="14" /></element>
+		<element ref="t_vol_minus"><bounds x="86" y="63" width="72" height="14" /></element>
 		<element ref="key" inputtag="CAR_KEYS" inputmask="0x0040"><bounds x="0" y="90" width="76" height="28" /></element>
 		<element ref="t_stand_by"><bounds x="2" y="97" width="72" height="14" /></element>
 		<element ref="key" inputtag="CAR_KEYS" inputmask="0x0080"><bounds x="84" y="90" width="76" height="28" /></element>
