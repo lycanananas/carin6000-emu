@@ -13,6 +13,7 @@ Stan: instalacja oprogramowania z CD do flasha przechodzi, start z flasha urucha
 | `roms/carin0109/` | `bootrom_0109.bin` (bootrom 1.21 z płyty NAV_SW, `Mk2IC/0109`) i `nv.img` (seed NV z identyfikatorem `Mk2IC0109`). |
 | `cd/` | Obrazy płyt, nie są w repo (`.gitignore`): oprogramowanie `carin_nav_sw` i mapy, np. `carin_maps_pl_2012_2013` (`.chd` albo `.cue` + `.img`). Opis w [cd/README.md](cd/README.md). |
 | `tools/` | `carin.py` (budowanie i uruchamianie) oraz narzędzia analityczne. |
+| `cfw/` | Własne oprogramowanie na płytę (custom firmware): [`cfw/poc`](cfw/poc/README.md) (hello world, przyciski, π, benchmark RAM/wideo na prawdziwy sprzęt) i [`cfw/carminat_doom`](cfw/carminat_doom/README.md) (port Dooma, w budowie). Binarki (`build/`, moduły, obrazy, WAD-y) są poza gitem. |
 | `docs/` | Notatki z reverse engineeringu. |
 | `state/` | Stany maszyny (NV + flash). Ignorowany przez gita. |
 | `logs/` | Log builda i logi kolejnych uruchomień. Ignorowany przez gita. |
@@ -138,6 +139,43 @@ Otwiera się jedno okno (layout `mame/src/mame/layout/carin.lay`): u góry ekran
 Zapłon: przycisk IGNITION w sekcji CAR panelu albo klawisz **I** (przełącznik). Po wyłączeniu system po ok. 25 s zapisuje ustawienia do NV i się wyłącza, a slave odcina zasilanie (czarny ekran). Ponowne włączenie zapłonu uruchamia urządzenie. Tak wymusza się zapis ustawień przed zamknięciem MAME.
 
 Klawiatura: 1 Mute nav, 2 Last message, 3 VOL+, 4 VOL−, 5 wciśnięcie pokrętła, 7 Stand by, 8 Address book, ←/→ pokrętło; 6 i 9 uruchamiają autotest diagnostyczny; Q/W/E/R to kody nieobsługiwane przez soft. Nazwy i klawisze można zmienić w MAME (Tab → Input). Emulacja domyślnie idzie najszybciej, jak się da (`-nothrottle`); `--realtime` zwalnia ją do prędkości prawdziwego urządzenia. Menu MAME (Tab) działa zawsze, `gui` uruchamia MAME z `-ui_active`. Płytę wkłada się w trakcie przez Tab → File Manager → cdrom (wyjęcie: „[empty slot]”).
+
+## Własne płyty (cfw)
+
+W `cfw/` są dwie osobne płyty z własnym oprogramowaniem (custom firmware). Każda to kopia płyty NAV_SW, na której `sysgo` zamiast UI instalatora (`ui_handler`) uruchamia nasz program, a instalator `il` jest zastąpiony zaślepką, która tylko śpi. Flash zostaje nietknięty, a ta sama płyta działa na obu wariantach sprzętu (0109 i 0209).
+
+| Płyta | Projekt | Co robi |
+|---|---|---|
+| `cd/carin_poc` | [`cfw/poc`](cfw/poc/README.md) | HELLO WORLD, licznik z przycisków, cyfry π. W pasku tytułu benchmark na prawdziwy sprzęt: wolny RAM, kopiowanie ramki do pamięci wideo, rysowanie kolumn. |
+| `cd/carminat_doom` | [`cfw/carminat_doom`](cfw/carminat_doom/README.md) | Doom (doomgeneric) z Freedoom E1M1, sterowanie panelem z zatrzaskiem. |
+
+**Wymagania:** `m68k-elf-gcc`, `m68k-elf-newlib` i `m68k-elf-binutils` (Arch: AUR), `python3`, `chdman` (pakiet `mame-tools`), `curl` i `unzip` (Doom pobiera Freedoom sam) oraz obraz `cd/carin_nav_sw.img` + `.cue`.
+
+**Budowanie:**
+
+```bash
+make -C cfw            # obie płyty
+make -C cfw poc        # tylko cd/carin_poc.{img,cue,chd}
+make -C cfw doom       # tylko cd/carminat_doom.{img,cue,chd}
+make -C cfw clean
+```
+
+**Test w emulatorze.** Z pustym flashem (`--seed`) bootrom od razu startuje z płyty. Z zainstalowanym stanem płyta działa jak aktualizacja: zamknij planszę „Attention!”, urządzenie się zrestartuje i wystartuje z płyty.
+
+```bash
+tools/carin.py gui --state poc  --seed --cd cd/carin_poc.cue
+tools/carin.py gui --state doom --seed --cd cd/carminat_doom.cue
+tools/carin.py gui --state poc0109 --load state/hw0109 --cd cd/carin_poc.cue   # jak aktualizacja, sprzęt 0109
+```
+
+**Nagrywanie** na CD-R, z katalogu `cd/` (szczegóły w sekcji „Wypalanie na prawdziwą płytę”):
+
+```bash
+cd cd && cdrdao write --device /dev/sr0 carin_poc.cue
+cd cd && cdrdao write --device /dev/sr0 carminat_doom.cue
+```
+
+Na prawdziwym sprzęcie warto najpierw wypalić PoC i odczytać benchmark z paska tytułu. Obrazów płyt nie publikuje się, bo zawierają OS-9 i oprogramowanie Philipsa/Renault. Każdy buduje je z własnego obrazu NAV_SW.
 
 ## Logi
 

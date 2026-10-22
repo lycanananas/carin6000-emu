@@ -8,4 +8,13 @@
 /cd/
 
 __pycache__/
-/poc/build/
+# Custom firmware builds: binaries stay out of git (modules, ELF, disc images, WADs, downloads)
+/cfw/*/build/
+/cfw/**/*.o
+/cfw/**/*.elf
+/cfw/**/*.bin
+/cfw/**/*.mod
+/cfw/**/*.img
+/cfw/**/*.chd
+/cfw/**/*.wad
+/cfw/**/*.zip
