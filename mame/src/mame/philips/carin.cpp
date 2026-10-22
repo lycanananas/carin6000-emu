@@ -115,6 +115,9 @@ void carin_state::carin_mem(address_map &map)
 
 	// Main system RAM (2 MiB)
 	map(0x800000, 0x9effff).ram();
+	// "Extension RAM" from the init module's memory list (2 MB); the navigation with a map disc
+	// needs it (without it device_dialog cannot be forked and dbd runs out of heap).
+	map(0xa00000, 0xbfffff).ram();
 	map(0x9f0000, 0x9fffff).rw(FUNC(carin_state::carin_slave_r), FUNC(carin_state::carin_slave_w));
 	map(0xf00000, 0xf0003f).rw(FUNC(carin_state::carin_arcnet_r), FUNC(carin_state::carin_arcnet_w));
 
