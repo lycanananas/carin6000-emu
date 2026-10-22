@@ -10,6 +10,7 @@
  * Built like the PoC: position independent, no writable globals, state on the stack.
  */
 #include "../src/carminat.h"
+#include "../src/scrlog.h"
 
 #define DOOM_IMAGE "/cd/language_cd/d_f.csf"
 #define DOOM_WAD "/cd/language_cd/e_f.csf"
@@ -20,8 +21,11 @@
 
 void run_image(void (*entry)(struct carminat_env *), struct carminat_env *env, void *stack_top);
 
-static void log_line(const char *s)
+/* Every step goes to the console (UART A) and to the screen. */
+static void log_line(struct scrlog *lg, const char *s)
 {
+	scrlog_puts(lg, s);
+	scrlog_putc(lg, '\n');
 	char line[96];
 	int n = 0;
 	while (s[n] && n < (int)sizeof(line) - 1) {
@@ -50,11 +54,12 @@ static char *fmt_hex(char *p, unsigned v, int digits)
 	return p;
 }
 
-static void fail(const char *what, int err)
+static void fail(struct scrlog *lg, const char *what, int err)
 {
 	char line[80];
 	fmt_hex(str_cat(str_cat(str_cat(line, "doom loader: "), what), ", error "), -err, 3);
-	log_line(line);
+	lg->color = SCRLOG_RED;
+	log_line(lg, line);
 	for (;;)
 		os9_sleep(0);
 }
@@ -90,36 +95,48 @@ int main(void)
 	char line[80];
 	struct flat_header h;
 	struct carminat_env env;
+	struct scrlog log, *lg = &log;
 	void *zone, *block;
 
-	log_line("");
-	log_line("*** Carminat Doom loader ***");
+	env.fb = VSC_DRAM + find_vsr();
+	scrlog_init(lg, env.fb, 0);
+	lg->color = SCRLOG_YELLOW;
+	log_line(lg, "");
+	log_line(lg, "*** Carminat Doom loader ***");
+	lg->color = SCRLOG_TEXT;
+	fmt_hex(str_cat(line, "frame buffer at DRAM "), (unsigned)(env.fb - VSC_DRAM), 5);
+	log_line(lg, line);
 
 	int got = os9_srqmem(ZONE_SIZE, &zone);
 	if (got < 0)
-		fail("no RAM for the zone", got);
+		fail(lg, "no RAM for the zone", got);
 	env.zone = zone;
 	env.zone_size = got;
+	fmt_hex(str_cat(fmt_hex(str_cat(line, "zone "), got, 6), " bytes at "), (unsigned)zone, 8);
+	log_line(lg, line);
 
+	log_line(lg, "opening " DOOM_IMAGE);
 	int path = os9_open(DOOM_IMAGE, 1);
 	if (path < 0)
-		fail("cannot open " DOOM_IMAGE, path);
+		fail(lg, "cannot open " DOOM_IMAGE, path);
 	int err = read_all(path, &h, sizeof(h));
 	if (err < 0 || h.magic != FLAT_MAGIC)
-		fail("bad image header", err ? err : -1);
+		fail(lg, "bad image header", err ? err : -1);
 
 	unsigned need = h.image_size + h.bss_size + HEAP_SIZE + STACK_SIZE;
 	got = os9_srqmem(need, &block);
 	if (got < 0)
-		fail("no RAM for the image", got);
+		fail(lg, "no RAM for the image", got);
 	unsigned char *base = block;
-	fmt_hex(str_cat(fmt_hex(str_cat(fmt_hex(str_cat(line, "image at "), (unsigned)base, 8), " size "),
-		need, 6), " zone at "), (unsigned)zone, 8);
-	log_line(line);
+	fmt_hex(str_cat(fmt_hex(str_cat(line, "image at "), (unsigned)base, 8), " size "), need, 6);
+	log_line(lg, line);
 
+	log_line(lg, "reading the image");
 	err = read_all(path, base, h.image_size);
 	if (err < 0)
-		fail("reading the image", err);
+		fail(lg, "reading the image", err);
+	fmt_hex(str_cat(line, "relocating, count "), h.reloc_count, 5);
+	log_line(lg, line);
 	/* Relocations, a chunk at a time (they can be a few hundred KB). */
 	unsigned chunk[256];
 	unsigned left = h.reloc_count;
@@ -127,7 +144,7 @@ int main(void)
 		unsigned n = left > 256 ? 256 : left;
 		err = read_all(path, chunk, n * 4);
 		if (err < 0)
-			fail("reading relocations", err);
+			fail(lg, "reading relocations", err);
 		for (unsigned i = 0; i < n; i++) {
 			unsigned *word = (unsigned *)(base + chunk[i]);
 			*word += (unsigned)base;
@@ -140,13 +157,13 @@ int main(void)
 
 	env.heap = base + h.image_size + h.bss_size;
 	env.heap_end = env.heap + HEAP_SIZE;
-	env.fb = VSC_DRAM + find_vsr();
 	env.wad = DOOM_WAD;
 	env.nav = os9_open("/nav_bus", 3);
 	if (env.nav < 0)
-		fail("cannot open /nav_bus", env.nav);
+		fail(lg, "cannot open /nav_bus", env.nav);
 
-	log_line("starting doom");
+	log_line(lg, "starting doom");
+	env.log = lg;	/* stays valid: Doom runs on its own stack */
 	run_image((void (*)(struct carminat_env *))(base + h.entry), &env, base + need);
 	return 0;
 }

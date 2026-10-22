@@ -12,6 +12,10 @@
 #include <unistd.h>
 
 #include "carminat.h"
+#include "scrlog.h"
+
+extern struct scrlog carminat_log;
+extern int carminat_log_on;
 
 #undef errno
 extern int errno;
@@ -83,6 +87,14 @@ ssize_t write(int fd, const void *buf, size_t count)
 	size_t done = 0;
 	if (fd != 1 && fd != 2)
 		return fail(EBADF);
+	/* On the screen too: everything until the game starts, errors (stderr) always. */
+	if (carminat_log_on || fd == 2) {
+		if (fd == 2)
+			carminat_log.color = SCRLOG_RED;
+		for (size_t i = 0; i < count; i++)
+			scrlog_putc(&carminat_log, s[i]);
+		carminat_log.color = SCRLOG_TEXT;
+	}
 	while (done < count) {
 		size_t n = 0;
 		while (done < count && n < sizeof(line) - 2) {

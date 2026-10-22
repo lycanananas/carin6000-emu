@@ -195,6 +195,10 @@ void D_Display (void)
 		borderdrawcount = 3;
     }
 
+#ifdef CARMINAT
+    // CARMINAT: no screen melt (slow at a few frames a second, and it melted the start log).
+    wipegamestate = gamestate;
+#endif
     // save the current screen if about to wipe
     if (gamestate != wipegamestate)
 		{
@@ -447,6 +451,14 @@ void D_DoomLoop (void)
 
     V_RestoreBuffer();
     R_ExecuteSetViewSize();
+
+#ifdef CARMINAT
+    {
+        // CARMINAT: the start was logged on the screen; wait for a button before playing.
+        void carminat_ready(void);
+        carminat_ready();
+    }
+#endif
 
     D_StartGameLoop();
 

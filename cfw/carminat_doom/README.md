@@ -37,11 +37,21 @@ Do wypalenia jak PoC: `cd cd && cdrdao write --device /dev/sr0 carminat_doom.cue
 - brakujące tekstury przełączników są pomijane;
 - `.csf` liczy się jako WAD;
 - bez muzyki;
+- bez efektu przejścia (melt);
+- czekanie na przycisk przed startem gry (`D_DoomLoop`);
 - `FixedMul`/`FixedDiv` przez `muls.l`/`divs.l` 68030, inline;
 - `R_DrawColumnLow` w asemblerze (`src/r_draw68k.S`);
 - szybki `memcpy` (`src/fastmem.S`).
 
 Kompilacja z `-msoft-float`, bo 68EC030 nie ma FPU. Makefile odrzuca obraz z instrukcjami FPU.
+
+## Start i log na ekranie
+
+Cały start widać na ekranie, bez kabla do UART-a (`src/scrlog.c`: font 5×7, 64 kolumny, 28 linii, przewijanie z własnej kopii tekstu):
+- program ładujący wypisuje każdy krok: bufor ekranu, strefa, otwarcie obrazu, adres, relokacje, `/nav_bus`. Błąd jest czerwony i program staje na nim;
+- Doom przekierowuje na ekran wszystko, co pisze na konsolę (`W_Init`, `R_Init`…), a `stderr` (np. `I_Error`) zawsze, także w trakcie gry.
+
+Po wczytaniu poziomu pojawia się zielone **READY – PRESS ANY BUTTON**. Gra (zegar, ekran) rusza dopiero po dowolnym przycisku albo obrocie pokrętła. Jeśli coś utknie, ostatnia linia na ekranie pokazuje, gdzie. Wszystko idzie równolegle na UART A.
 
 ## Sterowanie
 

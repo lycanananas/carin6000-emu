@@ -28,7 +28,7 @@ DOOM_SRC := dummy am_map doomdef doomstat dstrings d_event d_items d_iwad d_loop
 	r_things sha1 sounds statdump st_lib st_stuff s_sound tables v_video wi_stuff w_checksum w_file \
 	w_main w_wad z_zone w_file_stdc i_input i_video doomgeneric
 DOOM_OBJS := $(addprefix build/doom/,$(addsuffix .o,$(DOOM_SRC))) \
-	build/doom/dg_carminat.o build/doom/syscalls.o build/doom/fastmem.o build/doom/r_draw68k.o build/doom/os9.o build/doom/crt0.o
+	build/doom/dg_carminat.o build/doom/syscalls.o build/doom/fastmem.o build/doom/r_draw68k.o build/doom/scrlog.o build/doom/os9.o build/doom/crt0.o
 
 DOOM_CFLAGS := -mcpu=68030 -msoft-float -Os -MMD -std=gnu99 -fno-common -ffunction-sections -fdata-sections \
 	-DCARMINAT -DCMAP256 -DDOOMGENERIC_RESX=384 -DDOOMGENERIC_RESY=240 -DNORMALUNIX -D_DEFAULT_SOURCE \
@@ -48,7 +48,7 @@ build build/doom build/dl:
 
 build/doom/%.o: $(DG)/%.c | build/doom
 	$(CC) $(DOOM_CFLAGS) -c -o $@ $<
-build/doom/%.o: src/%.c src/carminat.h | build/doom
+build/doom/%.o: src/%.c src/carminat.h src/scrlog.h | build/doom
 	$(CC) $(DOOM_CFLAGS) -c -o $@ $<
 build/doom/%.o: src/%.S | build/doom
 	$(CC) $(DOOM_CFLAGS) -c -o $@ $<
@@ -62,8 +62,8 @@ build/doom.bin: build/doom.elf tools/mkflat.py
 		echo "error: FPU instructions (the 68EC030 has no FPU)"; exit 1; fi
 	python3 tools/mkflat.py $< $@
 
-build/loader.elf: loader/start.S loader/loader.c src/os9.S src/carminat.h | build
-	$(CC) $(LOADER_CFLAGS) $(LOADER_LDFLAGS) -o $@ loader/start.S loader/loader.c src/os9.S -lgcc
+build/loader.elf: loader/start.S loader/loader.c src/scrlog.c src/scrlog.h src/os9.S src/carminat.h | build
+	$(CC) $(LOADER_CFLAGS) $(LOADER_LDFLAGS) -o $@ loader/start.S loader/loader.c src/scrlog.c src/os9.S -lgcc
 	@if $(OBJDUMP) -r $@ | grep -q 'R_68K_32 '; then \
 		echo "error: absolute relocations in the loader:"; $(OBJDUMP) -r $@ | grep 'R_68K_32 '; exit 1; fi
 	$(SIZE) $@
@@ -75,7 +75,7 @@ build/%.raw: build/%.elf
 	$(OBJCOPY) -O binary -j .text $< $@
 
 build/ui_handler.mod: build/loader.raw $(POC)/tools/mkmod.py
-	python3 $(POC)/tools/mkmod.py $< ui_handler $@ --size $(UI_SIZE) --mem 0x200 --stack 0x2000
+	python3 $(POC)/tools/mkmod.py $< ui_handler $@ --size $(UI_SIZE) --mem 0x200 --stack 0x3000
 
 build/il.mod: build/il_stub.raw $(POC)/tools/mkmod.py
 	python3 $(POC)/tools/mkmod.py $< il $@ --size $(IL_SIZE) --mem 0x100 --stack 0x400

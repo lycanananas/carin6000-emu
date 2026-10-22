@@ -17,6 +17,8 @@ struct flat_header {
 };
 
 /* What the loader hands to Doom's entry point. */
+struct scrlog;
+
 struct carminat_env {
 	unsigned char *zone;		/* the zone heap (Extension RAM, 2 MB) */
 	unsigned zone_size;
@@ -25,6 +27,7 @@ struct carminat_env {
 	volatile unsigned char *fb;	/* frame buffer, 384 x 240, RRRGGGBB */
 	int nav;			/* path of /nav_bus, opened by the loader */
 	const char *wad;		/* WAD path on the disc */
+	struct scrlog *log;		/* the loader's on-screen log, Doom carries on with it */
 };
 
 /* SCC66470 DRAM as seen by the CPU; videodr's display program starts at DRAM 0x3ec. */

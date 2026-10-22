@@ -13,12 +13,16 @@
 #include <string.h>
 
 #include "carminat.h"
+#include "scrlog.h"
 #include "d_event.h"
 #include "doomgeneric.h"
 #include "doomkeys.h"
 #include "doomtype.h"
 
 struct carminat_env *carminat_env;
+/* The start is logged on the screen (no serial cable needed) until the player presses a button. */
+struct scrlog carminat_log;
+int carminat_log_on;
 
 extern boolean menuactive;
 extern int key_nextweapon;
@@ -190,7 +194,6 @@ static void poll_nav(void)
 void DG_Init(void)
 {
 	DG_ScreenBuffer = (pixel_t *)carminat_env->fb;
-	memset((void *)carminat_env->fb, 0, FB_W * FB_H);
 	key_nextweapon = 'n';
 	joybspeed = 29;		/* >= MAX_JOY_BUTTONS: always run */
 	usemouse = 1;
@@ -253,10 +256,32 @@ void DG_SetWindowTitle(const char *title)
 	(void)title;
 }
 
+/* d_main.c D_DoomLoop, just before the game clock starts (CARMINAT patch): the level is loaded;
+ * wait for any panel key or knob turn, then hand the screen to the game. */
+void carminat_ready(void)
+{
+	unsigned char f[0x26];
+	carminat_log.color = SCRLOG_GREEN;
+	scrlog_puts(&carminat_log, "\nREADY - PRESS ANY BUTTON\n");
+	printf("ready, waiting for a button\n");
+	for (;;) {
+		if (os9_ready(carminat_env->nav) > 0) {
+			int n = os9_read(carminat_env->nav, f, sizeof(f) - 1);
+			if (n >= 4 && f[0] == 0x3a && f[1] == 0x3b && (f[2] == 0x48 || f[2] == 0x49))
+				break;
+		}
+		os9_sleep(5);
+	}
+	carminat_log_on = 0;
+	memset((void *)carminat_env->fb, 0, FB_W * FB_H);
+}
+
 int carminat_main(void)
 {
 	static char *argv[] = { "doom", "-iwad", NULL, "-nosound", "-nomusic", "-skill", "3", "-warp", "1", "1", NULL };
 	argv[2] = (char *)carminat_env->wad;
+	carminat_log = *carminat_env->log;
+	carminat_log_on = 1;
 	printf("Carminat Doom: zone %u KB at %p, heap %u KB\n", carminat_env->zone_size >> 10,
 	       carminat_env->zone, (unsigned)(carminat_env->heap_end - carminat_env->heap) >> 10);
 	doomgeneric_Create(10, argv);
