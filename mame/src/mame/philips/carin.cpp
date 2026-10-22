@@ -24,6 +24,9 @@
 #include "machine/timekpr.h"
 #include "sound/cdda.h"
 
+#include "multibyte.h"
+
+#include <cmath>
 #include <cstdio>
 
 #include "emupal.h"
@@ -209,6 +212,7 @@ void carin_state::machine_start()
 	save_item(NAME(m_car_input_last));
 	m_mbox_reply_timer = timer_alloc(FUNC(carin_state::mbox_reply_irq), this);
 	m_master_reset_timer = timer_alloc(FUNC(carin_state::master_reset), this);
+	m_dr_timer = timer_alloc(FUNC(carin_state::slave_dr_tick), this);
 	m_car_notify_timer = timer_alloc(FUNC(carin_state::car_notify_tick), this);
 	m_car_notify_timer->adjust(attotime::from_msec(2), 0, attotime::from_msec(2));
 	save_item(NAME(m_car_notifies));
@@ -619,6 +623,14 @@ void carin_state::carin_mailbox_kick(uint8_t channel)
 		return;
 	}
 
+	// Channel 6, type 6 from the master: an h_itc command byte for the slave (h_itc_dr SetStat).
+	// 0xF5 follows dp's first position record on subsystem 0xB2: start the position service.
+	if (channel == 6 && type == 6 && shared_byte(tx + 7) >= 1 && shared_byte(tx + 8) == 0xf5 && m_dr_timer->remaining().is_never())
+	{
+		m_trace.line(carin_trace::EVENTS, trace_time(), "h_itc command F5: position service on (subsystem B2)");
+		m_dr_timer->adjust(attotime::from_seconds(1), 0, attotime::from_seconds(1));
+	}
+
 	// Only channel 3 is the CD drive (bootrom and cddr_ipc); 8 is h_ibus_dr and 9 is dc_dr, whose protocols are unknown.
 	if (channel != 3)
 	{
@@ -712,6 +724,95 @@ void carin_state::car_rc5(uint8_t code)
 	m_trace.line(carin_trace::EVENTS, trace_time(), "car rc5 %02X", code);
 }
 
+// Car side: the GPS antenna position, in the receiver's units (1e-9 semicircles = 1.8e-7 degree, as
+// "Read GPS data" in the diagnosis shows them). The diagnosis shows the longitude 30 degrees lower
+// than the raw value (0 = 390 West), so the receiver's longitude carries a 30 degree offset.
+int32_t carin_state::gps_latitude() const { return int32_t(std::lround(m_car_latitude / 1.8e-7)); }
+int32_t carin_state::gps_longitude() const { return int32_t(std::lround((m_car_longitude + 30.0) / 1.8e-7)); }
+
+// Slave HLE, h_itc subsystem 0xB2 = dead reckoning: every second the slave answers dp with a service
+// 0x83 record (19 little-endian longs, the layout dp sent) in the subsystem page 0x9FB200 and announces
+// it on channel 6 (type 6, data = event 0xF5). The slave keeps the sensor part of the last record dp
+// wrote (service 2) and puts in the position (L3 longitude, L4 latitude, the GPS units) with the valid
+// bit. dp maps L3/L4 straight into its position; with a position the status line satellite turns green.
+TIMER_CALLBACK_MEMBER(carin_state::slave_dr_tick)
+{
+	const uint32_t page = 0xb200;
+	if (shared_byte(page + 0))   // the master holds the page
+		return;
+	// A new record from dp (service 2: start-up state, relocation, ...): take it over.
+	if (shared_byte(page + 2) == 2)
+	{
+		char dump[2 * sizeof(m_dr_record) + 1] = {};
+		for (unsigned i = 0; i < sizeof(m_dr_record); i++)
+		{
+			m_dr_record[i] = shared_byte(page + 6 + i);
+			std::snprintf(dump + 2 * i, 3, "%02X", m_dr_record[i]);
+		}
+		m_trace.line(carin_trace::EVENTS, trace_time(), "dp position record %s", dump);
+	}
+	put_u32le(&m_dr_record[0x0c], gps_longitude());
+	put_u32le(&m_dr_record[0x10], gps_latitude());
+	set_shared_byte(page + 1, 1);
+	set_shared_byte(page + 2, 0x83);
+	set_shared_byte(page + 3, shared_byte(page + 3) + 1);   // update counter (GetStat 0x802 "new data")
+	set_shared_byte(page + 4, 0x02);
+	set_shared_byte(page + 5, sizeof(m_dr_record));
+	for (unsigned i = 0; i < sizeof(m_dr_record); i++)
+		set_shared_byte(page + 6 + i, m_dr_record[i]);
+	set_shared_byte(page + 6 + 0x3e, m_dr_record[0x3e] | 0x80);   // struct word 0x2a bit 15: valid
+	set_shared_byte(page + 1, 0);
+	// The announcement is an h_itc event code, not the subsystem: dp subscribes event 0xF5 on /h_itc/e
+	// and reads the B2 record when it arrives.
+	static const uint8_t notify[1] = { 0xf5 };
+	if (mbox_post(6, 6, notify, sizeof(notify)))
+		m_trace.line(carin_trace::EVENTS, trace_time(), "slave position record (B2/83)");
+	m_gps_pending = true;
+}
+
+// Slave HLE, h_itc subsystem 0xB3 = GPS receiver: a new record after each position record, announced
+// with event 0xF6 (dp turns it into /pack/gps_info).
+void carin_state::slave_gps_tick()
+{
+	if (!slave_gps_record())
+		return;
+	static const uint8_t notify[1] = { 0xf6 };
+	if (mbox_post(6, 6, notify, sizeof(notify)))
+		m_trace.line(carin_trace::EVENTS, trace_time(), "slave GPS record (B3)");
+}
+
+// The record in the subsystem page 0x9FB300. h_itc only opens a service whose page has data (flags
+// bit 1), and sysmon, mmi_root and dp open B3 once at start-up, so the slave keeps the page filled from
+// power-on (the master clears the shared RAM while it boots, car_notify_tick fills it again).
+bool carin_state::slave_gps_record()
+{
+	const uint32_t page = 0xb300;
+	if (shared_byte(page + 0))
+		return false;
+	// One record for both services: service 0x83 reads longs 0-6, service 0x82 longs 7-35 (dp and the
+	// diagnosis map them into one struct). Bytes go through unswapped, so the longs are big-endian.
+	// long 3 latitude, 4 longitude, 5 height (dm); long 8 bits 0-15 satellites tracked (dp: "TRK"
+	// without a fix), long 9 bits 16-31 satellites used (?); long 20 bits 16-31 fix (2 = 2D, 3 = 3D);
+	// long 21 bits 16-23 flags (bit 6 receiver answers, bit 0 almanac (?), bit 2 position valid, bit 3 fix).
+	uint32_t longs[36] = {};
+	longs[3] = gps_latitude();
+	longs[4] = gps_longitude();
+	longs[5] = 1000;
+	longs[8] = 6;
+	longs[9] = 6u << 16;
+	longs[20] = 3u << 16;
+	longs[21] = 0x4du << 16;
+	set_shared_byte(page + 1, 1);
+	set_shared_byte(page + 2, 0x82);
+	set_shared_byte(page + 3, shared_byte(page + 3) + 1);
+	set_shared_byte(page + 4, 0x02);
+	set_shared_byte(page + 5, sizeof(longs));
+	for (unsigned i = 0; i < sizeof(longs); i++)
+		set_shared_byte(page + 6 + i, uint8_t(longs[i / 4] >> (24 - 8 * (i & 3))));
+	set_shared_byte(page + 1, 0);
+	return true;
+}
+
 TIMER_CALLBACK_MEMBER(carin_state::master_reset)
 {
 	// With the ignition off the slave cuts the power instead (the unit stays off until the ignition
@@ -746,6 +847,7 @@ void carin_state::machine_reset()
 	m_i2c_write_address = -1;
 	m_mbox_reply_timer->adjust(attotime::never);
 	m_master_reset_timer->adjust(attotime::never);
+	m_dr_timer->adjust(attotime::never);
 	m_mbox_irq_channel = 0;
 	m_cdic_irq = false;
 	m_car_navbus_attention = false;
@@ -802,6 +904,10 @@ TIMER_CALLBACK_MEMBER(carin_state::car_notify_tick)
 		m_cd_spinup_until = machine().time() + attotime::from_msec(1500);
 	const bool spinning = present && m_cd_spinup_until != attotime::zero && machine().time() < m_cd_spinup_until;
 	const int state = !present ? 0 : spinning ? 2 : 1;
+	// The GPS page has to hold data before anybody opens it, see slave_gps_record().
+	if (!(shared_byte(0xb300 + 4) & 0x02))
+		slave_gps_record();
+
 	if (m_cd_driver_ready && state != m_cd_reported)
 	{
 		const uint8_t status[4] = { 0x00, 0x00, uint8_t(state == 1 ? 0x0a : state == 2 ? 0x05 : 0x00), 0x00 };
@@ -812,6 +918,14 @@ TIMER_CALLBACK_MEMBER(carin_state::car_notify_tick)
 			if (state != 2)
 				m_cd_spinup_until = attotime::zero;
 		}
+		return;
+	}
+
+	// GPS record after the position record, once the mailbox is free again.
+	if (m_gps_pending && !m_mbox_irq_channel && m_mbox_reply_timer->remaining().is_never())
+	{
+		m_gps_pending = false;
+		slave_gps_tick();
 		return;
 	}
 

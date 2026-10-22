@@ -102,6 +102,17 @@ private:
 	emu_timer *m_mbox_reply_timer = nullptr;
 	emu_timer *m_master_reset_timer = nullptr;
 	TIMER_CALLBACK_MEMBER(master_reset);
+	emu_timer *m_dr_timer = nullptr;
+	uint8_t m_dr_record[0x4c] = {};
+	TIMER_CALLBACK_MEMBER(slave_dr_tick);
+	void slave_gps_tick();
+	bool slave_gps_record();
+	bool m_gps_pending = false;
+	// Car side: where the car is (degrees, north/east positive); fixed until the car emulator moves it.
+	double m_car_latitude = 52.2297;
+	double m_car_longitude = 21.0122;
+	int32_t gps_latitude() const;
+	int32_t gps_longitude() const;
 	unsigned m_car_notifies = 0;           // "data available" announcements still to send
 	bool m_cd_driver_ready = false;        // cddr_ipc started (type 7 seen from OS-9)
 	int m_cd_reported = -1;                // drive state last reported: -1 not yet, 0 none, 1 ready, 2 spinning
