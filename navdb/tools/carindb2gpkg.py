@@ -91,6 +91,26 @@ def units(f, first, end):
 
 
 ROUTING_LEVELS = ((1, 0), (0x1E, 1), (3, 2), (2, 3))
+HN_NONE = 32767
+
+
+def street_index(f, tables):
+    """Table f (kind 0x0e): sorted street names; slot 0 = 8-byte entries (name, flags, 0, offset
+    of a slot 1 record), slot 1 = 6-byte runs (offset into slot 2, count, flag), slot 2 = 24-byte
+    items: u32 lon, u32 lat (the town), house numbers even from/to, odd from/to (32767 = none),
+    u32 table 1 unit pointer, u16 offset of the first segment, u16 number of consecutive segments.
+    Returns {(parcel block << 16) | segment offset: (even_from, even_to, odd_from, odd_to, count)}."""
+    (_, _), (data, _), (end, _) = tables[0x0F]
+    runs = {}
+    for b, length, head in units(f, data, end):
+        f.seek(b * BLOCK)
+        u = f.read(length * BLOCK)
+        off, count = struct.unpack_from(">HH", u, 8 + 8)
+        for i in range(count):
+            _, _, e0, e1, o0, o1, ptr, seg, n = struct.unpack_from(">IIHHHHIHH", u, off + 24 * i)
+            runs[((ptr >> 8) << 16) | seg] = (e0, e1, o0, o1, n)
+    print(f"street index: {len(runs)} runs with house numbers")
+    return runs
 
 
 def parcels(f, gp, tables, bbox, sizes, release):
@@ -104,13 +124,16 @@ def parcels(f, gp, tables, bbox, sizes, release):
                                      ("class", "INTEGER"), ("kind", "INTEGER"), ("oneway", "INTEGER"),
                                      ("length_m", "INTEGER"),
                                      ("heading_a", "REAL"), ("heading_b", "REAL"),
+                                     ("hn_even_from", "INTEGER"), ("hn_even_to", "INTEGER"),
+                                     ("hn_odd_from", "INTEGER"), ("hn_odd_to", "INTEGER"),
                                      ("b10", "INTEGER"), ("b11", "INTEGER"), ("b16", "INTEGER"), ("b17", "INTEGER")])
     unpacker = Unpacker(sizes, release, TEXT_TABLES)
+    hn = street_index(f, tables)
     for tid, level in ROUTING_LEVELS:
-        parcel_level(f, gp, tables[tid], level, bbox, sizes, unpacker)
+        parcel_level(f, gp, tables[tid], level, bbox, sizes, unpacker, hn if level == 0 else {})
 
 
-def parcel_level(f, gp, table, level, bbox, sizes, unpacker):
+def parcel_level(f, gp, table, level, bbox, sizes, unpacker, hn):
     """One routing level: parcels and their segments. Word 0x58: the parcel of the level above
     (unit pointer, 0 at the top)."""
     (_, _), (data, _), (end, _) = table
@@ -147,8 +170,14 @@ def parcel_level(f, gp, table, level, bbox, sizes, unpacker):
         # dbq FUN_00001890: type 08 (32 bytes) in kind 0 units, type 09 (26 bytes, no name
         # reference at +26) in the routing levels
         rs = sizes[0x08] if w(4) == 0 else sizes[0x09]
+        run, run_left = None, 0
         for i in range(seg_n):
             r = seg_off + i * rs
+            found = hn.get((b << 16) | r)
+            if found:
+                run, run_left = found, found[4]
+            numbers = [None if v == HN_NONE else v for v in run[:4]] if run_left > 0 else [None] * 4
+            run_left -= 1
             a, c = w(r), w(r + 2)
             if not (0 < a < len(d) - 4 and 0 < c < len(d) - 4):
                 continue
@@ -158,7 +187,7 @@ def parcel_level(f, gp, table, level, bbox, sizes, unpacker):
             country, _, _ = place(parent)
             gp.add("roads", pts, (level, b, i, street, district, city_a or city_b, country,
                                   d[r + 16] & 0x0F, (d[r + 16] >> 4) & 7, (d[r + 11] >> 4) & 3, w(r + 12),
-                                  d[r + 14] * 360 / 256, d[r + 15] * 360 / 256,
+                                  d[r + 14] * 360 / 256, d[r + 15] * 360 / 256, *numbers,
                                   d[r + 10], d[r + 11], d[r + 16], d[r + 17]))
             roads += 1
     print(f"level {level}: parcels {n}, road segments {roads}")

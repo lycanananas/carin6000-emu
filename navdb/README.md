@@ -14,7 +14,16 @@ Stan:
 - podgląd całej mapy Warszawy: `temp/navdb/warszawa_mapa.png`;
 - tablice `d`/`e` to nazwy miejscowości i POI z indeksem alfabetycznym.
 
-Szczegóły w [docs/format.md](docs/format.md).
+Szczegóły w [docs/format.md](docs/format.md): specyfikacja formatu z podziałem na pola potwierdzone w kodzie, sprawdzone na danych i tylko widziane, z adresami funkcji OS-9, z notatkami pod enkoder (sekcja 8) i z listą otwartych spraw.
+
+Liczby dla całej bazy: 8,9 mln odcinków dróg (4 poziomy routingu), 302 tys. obszarów, 215 tys. dróg przeglądowych, 698 tys. POI. Zrozumiane jest ok. 50% objętości pliku. Brakuje jeszcze indeksów wyszukiwania (tablica f to 21%), części indeksowych tablic i kilku pól.
+
+## Następne kroki (pod enkoder)
+
+1. Indeksy wyszukiwania: f (ulice), d/e (miejscowości), 10, 12, 18; części indeksowe (`a`) tablic.
+2. Połączenia między parcelami (sloty 9 i 10, punkty brzegowe), pozostałe bajty odcinka, sloty 3, 7, 11 i 12.
+3. Drobne tablice 15, 14, 1d, 0, 4, a, b, c, 13, 17.
+4. Enkoder: OSM (na początek Mazowsze) → te same struktury; sprawdzanie dekoderem i w emulatorze.
 
 ```bash
 python3 navdb/tools/carindb2gpkg.py        # cała baza -> temp/navdb/carindb.gpkg (kilka minut)
