@@ -11,6 +11,7 @@ import ghidra.program.model.listing.CodeUnit;
 import ghidra.program.model.listing.CodeUnitIterator;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressSetView;
+import ghidra.program.database.SpecExtension;
 
 import java.io.File;
 import java.io.FileWriter;
@@ -36,10 +37,9 @@ public class ExportOS9Modules extends GhidraScript {
         int syncBytes = getShort(toAddr(0x00)) & 0xFFFF;
         
         if (syncBytes == 0x4AFC) {
-            // Offset 0x08 (4 bajty): Wskaźnik do punktu wejścia (Entry Point)
-            int entryOffset = getInt(toAddr(0x08));
-            // Offset 0x04 (2 bajty): Offset do nazwy modułu w ASCII
-            int nameOffset = getShort(toAddr(0x04)) & 0xFFFF;
+            // M$Exec (0x30): entry point; M$Name (0x0C): offset of the module name.
+            int entryOffset = getInt(toAddr(0x30));
+            int nameOffset = getInt(toAddr(0x0C));
 
             Address entryAddr = toAddr(entryOffset);
             String modRealName = progName;
@@ -74,6 +74,59 @@ public class ExportOS9Modules extends GhidraScript {
             createFunction(entryAddr, "os9_" + modRealName.replaceAll("[^a-zA-Z0-9_]", "_") + "_main");
         } else {
             println("    [!] Warning: 0x4AFC sync pattern not found at offset 0. Running standard analysis.");
+        }
+
+        // 1b. Functions Ghidra cannot reach: calls go through the A6 jump table (jsr (d16,A6)), so
+        // every "link a5,#n" (0x4E55, Microware C prologue) at an even address starts a function.
+        {
+            Address start = currentProgram.getMinAddress();
+            Address end = currentProgram.getMaxAddress();
+            int created = 0;
+            for (Address a = start; a.compareTo(end) < 0; a = a.add(2)) {
+                try {
+                    if ((getShort(a) & 0xFFFF) != 0x4E55)
+                        continue;
+                } catch (Exception e) {
+                    break;
+                }
+                if (getFunctionAt(a) != null || getInstructionContaining(a) != null && !getInstructionContaining(a).getAddress().equals(a))
+                    continue;
+                disassemble(a);
+                if (createFunction(a, null) != null)
+                    created++;
+            }
+            println("    [+] Functions created from link a5 prologues: " + created);
+        }
+
+        // 1c. Microware C calling convention: the first two arguments in D0 and D1, the rest on the
+        // stack, result in D0; D2-D7/A2-A6 preserved (A6 is the process data pointer). Ghidra's
+        // default 68k prototype passes everything on the stack, which loses the arguments.
+        try {
+            String proto =
+                "<prototype name=\"microware\" extrapop=\"4\" stackshift=\"4\">" +
+                "<input>" +
+                "<pentry minsize=\"1\" maxsize=\"4\"><register name=\"D0\"/></pentry>" +
+                "<pentry minsize=\"1\" maxsize=\"4\"><register name=\"D1\"/></pentry>" +
+                "<pentry minsize=\"1\" maxsize=\"500\" align=\"4\"><addr offset=\"4\" space=\"stack\"/></pentry>" +
+                "</input>" +
+                "<output><pentry minsize=\"1\" maxsize=\"4\"><register name=\"D0\"/></pentry></output>" +
+                "<unaffected>" +
+                "<register name=\"D2\"/><register name=\"D3\"/><register name=\"D4\"/><register name=\"D5\"/>" +
+                "<register name=\"D6\"/><register name=\"D7\"/><register name=\"A2\"/><register name=\"A3\"/>" +
+                "<register name=\"A4\"/><register name=\"A5\"/><register name=\"A6\"/><register name=\"SP\"/>" +
+                "</unaffected>" +
+                "<killedbycall><register name=\"D0\"/><register name=\"D1\"/><register name=\"A0\"/><register name=\"A1\"/></killedbycall>" +
+                "</prototype>";
+            new SpecExtension(currentProgram).addReplaceCompilerSpecExtension(proto, monitor);
+            FunctionIterator all = currentProgram.getFunctionManager().getFunctions(true);
+            int set = 0;
+            while (all.hasNext()) {
+                all.next().setCallingConvention("microware");
+                set++;
+            }
+            println("    [+] Microware calling convention set on " + set + " functions");
+        } catch (Exception e) {
+            println("    [!] Could not add the Microware calling convention: " + e);
         }
 
         // 2. Inicjalizacja dekompilatora

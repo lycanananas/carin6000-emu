@@ -3,6 +3,8 @@
 
 Usage: export_os9_modules.py [modules dir] [output dir]
 Defaults: temp/flash_modules -> temp/os9_ghidra_exports (Ghidra project in temp/ghidra).
+The analysis itself is the Java script ExportOS9Modules.java (Ghidra headless runs Java scripts);
+this file only starts analyzeHeadless.
 Modules come from tools/carin_flash_modules.py or tools/unpack_os9.py.
 """
 import shutil
@@ -18,7 +20,8 @@ PROJECT = "OS9_Batch_Project"
 
 
 def main():
-    ghidra = shutil.which("analyzeHeadless") or shutil.which("ghidra-analyzeHeadless")
+    ghidra = (shutil.which("analyzeHeadless") or shutil.which("ghidra-analyzeHeadless")
+              or next((p for p in ("/opt/ghidra/support/analyzeHeadless",) if Path(p).exists()), None))
     if not ghidra:
         sys.exit("error: Ghidra analyzeHeadless not found in PATH")
     modules = sorted(MODULES.glob("*"))
@@ -33,7 +36,7 @@ def main():
     subprocess.run([
         ghidra, str(PROJECT_DIR), PROJECT,
         "-import", *map(str, modules),
-        "-processor", "68000:BE:32:default",
+        "-processor", "68000:BE:32:MC68030",   # the CARiN's 68EC030; the code uses 68020+ instructions
         "-postScript", "ExportOS9Modules.java", str(OUT),
         "-scriptPath", str(Path(__file__).resolve().parent),
         "-overwrite",
