@@ -1,5 +1,6 @@
 """Minimal GeoPackage writer (SQLite, OGC GeoPackage 1.2) for points, lines and polygons in WGS 84,
-without GDAL bindings. Check the result with `ogrinfo -al -so FILE.gpkg`.
+without GDAL bindings, with the RTree spatial index extension (filled while writing, no triggers:
+the file is written once). Check the result with `ogrinfo -al -so FILE.gpkg`.
 """
 import sqlite3
 import struct
@@ -47,6 +48,9 @@ class GeoPackage:
             CREATE TABLE IF NOT EXISTS gpkg_geometry_columns (table_name TEXT NOT NULL, column_name TEXT NOT NULL,
                 geometry_type_name TEXT NOT NULL, srs_id INTEGER NOT NULL, z TINYINT NOT NULL, m TINYINT NOT NULL,
                 CONSTRAINT pk_geom_cols PRIMARY KEY (table_name, column_name));
+            CREATE TABLE IF NOT EXISTS gpkg_extensions (table_name TEXT, column_name TEXT, extension_name TEXT NOT NULL,
+                definition TEXT NOT NULL, scope TEXT NOT NULL,
+                CONSTRAINT ge_tce UNIQUE (table_name, column_name, extension_name));
         """)
         self.db.executemany("INSERT OR IGNORE INTO gpkg_spatial_ref_sys VALUES (?,?,?,?,?,?)", [
             ("Undefined cartesian SRS", -1, "NONE", -1, "undefined", None),
@@ -61,6 +65,10 @@ class GeoPackage:
         """fields: [(name, 'INTEGER'|'REAL'|'TEXT'), ...]"""
         cols = ", ".join(f'"{n}" {t}' for n, t in fields)
         self.db.execute(f'DROP TABLE IF EXISTS "{name}"')
+        self.db.execute(f'DROP TABLE IF EXISTS "rtree_{name}_geom"')
+        self.db.execute(f'CREATE VIRTUAL TABLE "rtree_{name}_geom" USING rtree(id, minx, maxx, miny, maxy)')
+        self.db.execute("INSERT OR REPLACE INTO gpkg_extensions VALUES (?, 'geom', 'gpkg_rtree_index', "
+                        "'http://www.geopackage.org/spec120/#extension_rtree', 'write-only')", (name,))
         self.db.execute(f'CREATE TABLE "{name}" (fid INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB{", " + cols if cols else ""})')
         self.db.execute("DELETE FROM gpkg_contents WHERE table_name = ?", (name,))
         self.db.execute("DELETE FROM gpkg_geometry_columns WHERE table_name = ?", (name,))
@@ -78,12 +86,16 @@ class GeoPackage:
         ext[3] = y1 if ext[3] is None else max(ext[3], y1)
         marks = ", ".join("?" * (1 + len(fields)))
         names = ", ".join(['geom'] + [f'"{f}"' for f in fields])
-        self.db.execute(f'INSERT INTO "{name}" ({names}) VALUES ({marks})', (_blob(kind, coords), *values))
+        cur = self.db.execute(f'INSERT INTO "{name}" ({names}) VALUES ({marks})', (_blob(kind, coords), *values))
+        self.db.execute(f'INSERT INTO "rtree_{name}_geom" VALUES (?, ?, ?, ?, ?)', (cur.lastrowid, x0, x1, y0, y1))
 
-    def close(self):
+    def close(self, styles=True):
         for name, (_, _, ext) in self.layers.items():
             if ext[0] is not None:
                 self.db.execute("UPDATE gpkg_contents SET min_x=?, min_y=?, max_x=?, max_y=? WHERE table_name=?",
                                 (*ext, name))
+        if styles:
+            from qgis_style import write_styles
+            write_styles(self.db, self.layers)
         self.db.commit()
         self.db.close()

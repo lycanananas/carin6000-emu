@@ -25,7 +25,7 @@ def bits_for(v):
 
 
 class BitReader:
-    """FUN_00004c16 & co: bfextu from a base pointer, MSB first; width 0 means 32 (68k bitfields)."""
+    """FUN_00004c16 & co: bfextu from a base pointer, MSB first."""
 
     def __init__(self, data, start):
         self.data = data
@@ -33,11 +33,13 @@ class BitReader:
         self.pos = 0
 
     def read(self, n):
-        n = n or 32
+        """n bits; n == 0 extracts 32 bits without moving (FUN_00004c16 adds the width to the
+        position, then bfextu with width 0 means 32)."""
+        width = n or 32
         byte, bit = self.base + (self.pos >> 3), self.pos & 7
         chunk = int.from_bytes(self.data[byte:byte + 5].ljust(5, b"\0"), "big")
         self.pos += n
-        return (chunk >> (40 - bit - n)) & ((1 << n) - 1)
+        return (chunk >> (40 - bit - width)) & ((1 << width) - 1)
 
 
 def s16(v):
@@ -82,9 +84,12 @@ class Unpacker:
         self.n = bits_for(unit[7] * BLOCK)            # FUN_000049f2
         self.cur = 0
         kind = struct.unpack_from(">H", unit, 4)[0]
-        if kind != 0:
-            return None                               # 0x0e, 0x14..0x16: other tables (not yet)
-        self.parcel()
+        if kind == 0:
+            self.parcel()
+        elif kind in (0x14, 0x15, 0x16):
+            self.shapes()
+        else:
+            return None                               # 0x0e: not ported yet
         struct.pack_into(">H", self.dst, 6, 0)
         return self.dst
 
@@ -124,6 +129,91 @@ class Unpacker:
             self.segments(t, 0x15)
             self.put_w(t + 0x34, 0)                   # FUN_00003e8a
             self.put_w(t + 0x36, 0)
+
+    def shapes(self):
+        """FUN_00004840: units of kind 0x14..0x16 (tables 1c, 16, 6): records whose shapes are runs
+        of points in slot 3, then the text area. Generic slot expander FUN_000044a2."""
+        z = self.size
+        t = z[UNIT_HDR]
+        self.copy(0, z[0x3D])
+        self.wca = bits_for(self.w(t + 0x0E) + 1)
+        self.dce, self.dcf, self.dd0, self.dd1 = self.src[self.cur:self.cur + 4]
+        self.cur += 4
+        self.bits = BitReader(self.src, self.cur)
+        wide = self.w(t + 0x10 + z[0x3F]) == 0        # slot 3: 8-byte absolute points, else 4-byte deltas
+        self.generic(t, z[0x3B], 0x25, 0x0E, wide)
+        self.generic(t + 4, z[0x3A], 0x26, 0x0E, wide)
+        self.generic(t + 8, z[0x3C], 0x27, 0x0E, wide)
+        self.generic(t + 0x0C, 8 if wide else 4, 0x0B if wide else 0x0A, 0x0E, wide)
+        self.texts()
+        if self.release > 0x13:
+            self.dd2, self.dd3, self.dd4, self.dd5, self.dd6 = (self.bits.read(8) for _ in range(5))
+            self.generic(t + 0x10, z[0x15], 0x28, 0x14, wide)
+            self.generic(t + 4, z[0x3A], 0x26, 0x14, wide)
+            self.generic(t + 8, z[0x3C], 0x27, 0x14, wide)
+
+    def generic(self, slot, rs, code, mode, wide):
+        """FUN_000044a2."""
+        b, t = self.bits, self.size[UNIT_HDR]
+        off, count = self.w(slot), self.w(slot + 2)
+        if not count:
+            return
+        last = off + (count - 1) * rs + (rs if code in (0x25, 0x26, 0x27) else 0)
+        step = 8 if wide else 4
+        pt_base = self.w(t + 0x0C)
+        prev = None
+        r = off
+        while r <= last:
+            if code == 0x26:
+                if mode == 0x0E:
+                    self.put_w(r, b.read(self.n))
+                    self.put_w(r + 2, step * b.read(self.wca) + pt_base)
+                    struct.pack_into(">I", self.dst, r + 4, b.read(32 if b.read(1) else self.dcf))
+                    struct.pack_into(">I", self.dst, r + 8, b.read(32))
+                    struct.pack_into(">I", self.dst, r + 12, b.read(32))
+                else:
+                    self.put_w(r + 16, b.read(self.n - 1) << 1)
+                    self.put_w(r + 18, b.read(16 if b.read(1) else self.dd2))
+            elif code == 0x0B:
+                struct.pack_into(">I", self.dst, r, b.read(32))
+                struct.pack_into(">I", self.dst, r + 4, b.read(32))
+            elif code == 0x0A:
+                self._xy_width(r, prev, r == off, self.dd0)
+                prev = r
+            elif code == 0x25:
+                self.put_b(r, b.read(7))
+                self.put_b(r + 1, b.read(1))
+                self.put_w(r + 2, b.read(self.n - 1) << 1)
+            elif code == 0x28:
+                for k in (0, 2, 4):
+                    width = 16 if b.read(1) else (self.dd4, self.dd5, self.dd6)[k // 2]
+                    self.put_w(r + k, b.read(width))
+            elif code == 0x27:
+                if mode == 0x0E:
+                    self.put_w(r, b.read(self.n))
+                    self.put_w(r + 2, step * b.read(self.wca) + pt_base)
+                    struct.pack_into(">I", self.dst, r + 4, b.read(32 if b.read(1) else self.dce))
+                else:
+                    self.put_w(r + 8, b.read(self.n - 1) << 1)
+                    b.read(16 if b.read(1) else self.dd3)
+                    self.put_w(r + 10, 0)
+            r += rs
+
+    def _xy_width(self, r, prev, first, width):
+        """Delta-coded x/y pair (as _xy) with a given delta width."""
+        b = self.bits
+        if first:
+            self.put_w(r, b.read(16))
+            self.put_w(r + 2, b.read(16))
+            return
+        for k in (0, 2):
+            if b.read(1) == 0:
+                v = self.w(prev + k) + b.read(width)
+            elif b.read(1) == 0:
+                v = self.w(prev + k) - b.read(width)
+            else:
+                v = b.read(16)
+            self.put_w(r + k, v)
 
     # -- slot expanders ------------------------------------------------------------------------
     def slot0(self, t, mode):

@@ -120,19 +120,92 @@ Slots of the parcel header (pair k at 8 + 4k; offsets are into the unpacked buff
 
 | Slot | Record | Content |
 |---|---|---|
-| 0, 1, 2 | 0x40 (10 B) | references (slot 2 is referenced by segments) |
+| 0, 1, 2 | 0x40 (10 B) | **place hierarchy**: +0 name, +2 second name (text offsets, 0 = none), +4 parent record. Slot 0 = country ("polska"), slot 1 = city ("warszawa"), slot 2 = street in a city ("ulica marszalkowska" / "srodmiescie" -> warszawa) |
 | 3 | 0x12 (4 B) | raw |
-| 4 | 0x08 (32 B) | **road segments**: +0 start point offset, +2 end point offset (points in slot 5, 6 or 7), +4 a slot 7 record, +6/+8 other segments (0 = none), +10..+17 attribute bytes, +18 slot 10 record, +20 slot 12 record, +26 slot 2 record, +30 slot 11 record |
+| 4 | 0x08 (32 B) | **road segments**, see below |
 | 5 | 0x10 (8 B) | **points** inside the parcel: x, y, owning segment, 2 attribute bytes |
 | 6 | 0x06 (16 B) | points on the parcel edge (x or y = 0 or max): where roads continue into the next parcel; + 32-bit and 14-bit fields |
 | 7 | 0x0c (6 B) | points: x, y, 3-bit value |
-| 9, 10, 11, 12 | 0x0f, 0x14, 0x13, 0x15 | attribute tables referenced by segments |
+| 9, 10 | 0x0f, 0x14 (8 B) | links to neighbouring parcels: u32 unit pointer (e.g. `03e19403`), u16 offset there, u16 |
+| 11, 12 | 0x13, 0x15 (6 B) | referenced by segments (+30, +20); meaning open |
 | 14 | – | text area (names) |
+
+Segment record (type 0x08, 32 bytes), checked on Warsaw (83 293 segments):
+
+| Offset | Content | How it was checked |
+|---|---|---|
+| +0, +2 | start and end point (offsets of point records in slot 5, 6 or 7) | the network draws correctly |
+| +4 | slot 7 record | |
+| +6, +8 | other segments (0 = none) | |
+| +10 | ? (139, 130, 133 most common) | |
+| +11 bits 4-5 | **one-way**: 0 both ways, 1 only start → end, 2 only end → start, 3 closed both ways | dual carriageways (Aleje Jerozolimskie 142/137, Puławska 96/95) split evenly into 1 and 2; with right-hand traffic the other carriageway lies left of the allowed direction for 98 %; 3 occurs exactly with kind 5 |
+| +11 bits 0-3 | ? (12 most common) | |
+| +12 | **length in metres** | median of geometric length / value = 1.00 in every class |
+| +14, +15 | **headings** at both ends, 256 steps per turn (+15 = +14 + 128 on straight segments) | |
+| +16 bits 0-3 | **road class (FRC)**: 0 motorway/expressway … 6 minor | Warsaw: S8, Wisłostrada, Trasa Łazienkowska = 0, arteries 1-2, collectors 3, local 4-6 |
+| +16 bits 4-6 | **kind**: 5 = not routable (skipped by dbq `FUN_00001890`; always one-way code 3) | |
+| +17 | ? (32 most common) | |
+| +18 / +20 / +30 | slot 10 / 12 / 11 records | |
+| +26 | **slot 2 record: street name, district, city** (and country through the parents) | Warsaw centre parcel: Aleje Jerozolimskie, Marszałkowska, Chmielna, Złota …; top names in Warsaw: Aleje Jerozolimskie, Puławska, Wał Miedzeszyński, Modlińska |
 
 **Point coordinates are steps of 64 GPS units (~1 m) from the parcel corner**: 0..512 in the smallest parcels (32 768 units wide), 0..1024, …, 0..8192 in larger ones (seen for every parcel size around Warsaw). Drawing every segment as a line from its start to its end point gives the road network (layer `roads`): Warsaw with the Vistula, the bridges and the centre.
 
+## Unit kinds and tables (survey)
+
+Word +4 of a unit is its kind; pbp picks the unpacker by it (only compressed units, byte +6 bit 0).
+
+| Table | Share | Kind | Compressed | Content | Decoder |
+|---|---|---|---|---|---|
+| 1 | 38 % | 0 | yes | **routing level 0**: the full road network in parcels | `roads` level 0, `parcels` |
+| 1e | 1.9 % | 3 | no | **routing level 1**: classes 0-2 | `roads` level 1 |
+| 3 | 0.6 % | 2 | no | **routing level 2**: classes 0-1 | `roads` level 2 |
+| 2 | 0.3 % | 1 | no | **routing level 3**: class 0 | `roads` level 3 |
+| 6, 16, 1c | 6.5 % | 0x16, 0x15, 0x14 | mostly | **background**, three levels of detail: areas and generalised roads | `areas`, `overview_roads` |
+| 7 | 3.1 % | 6 | no | **POI** | `poi` |
+| 11 | 11.4 % | 0x10 | no | POI names (8-byte entries like table d, with detail records) | via `poi` |
+| f | 21.3 % | 0x0e | no | street name search index (sorted, per city) | – |
+| d / e | 1.7 % | 0x0c / 0x0d | no | city names / alphabetic index | – |
+| 10, 12, 18 | 2 % | 0x0f, 0x11, 0x17 | no | indexes (pointer lists) | – |
+| 15, 14, 1d, 0, 4, a, b, c, 13, 17 | small | various | some | ? | – |
+
+## Routing levels (tables 1e, 3, 2)
+
+Same parcel layout as table 1 (slots, points, places), not compressed, bigger parcels, only the more important roads: level 1 has classes 0-2, level 2 classes 0-1, level 3 class 0; the class 0 length is the same on all levels (378 km around Warsaw). Segments are type **0x09 (26 bytes)** there (dbq `FUN_00001890`: type 08 when the unit kind is 0, else 09): the same fields up to +25, no street reference at +26. Word 0x58 of every parcel points at the parcel of the level above (table 1 → 1e → 3 → 2).
+
+## Background (tables 6, 16, 1c; pbp `FUN_00004840`, `FUN_000044a2`)
+
+Layout after the unit header: slots 0-4 of a 0x3d-byte header (52 bytes), the unit box at 0x20. Unpacking: copy 52 bytes, 4 raw bytes of widths (globals 0x0dce..0x0dd1), then the bit stream with the generic expander:
+
+| Slot | Record | Content |
+|---|---|---|
+| 0 | 0x3b (4 B) | groups of slot 1 by **area type**: 7-bit type, 1 bit, offset of the first slot 1 record of the group |
+| 1 | 0x3a (20 B) | **areas**: +0 name, +2 first point, +4 **area in m²** (Las Kabacki 9.0 km²), +8/+12 label position (GPS units) |
+| 2 | 0x3c (16 B) | **generalised roads**: +0 name (road number: "8", "61", "631"), +2 first point, +4 attribute |
+| 3 | 8 or 4 B | **points**: absolute GPS pairs (u32, u32) when header +0x10+size(0x3f) is 0, else 16-bit x/y deltas in steps of 64 from the box corner |
+| 4 | 0x15 (6 B) | second pass, release > 0x13 |
+
+A record's shape runs from its first point to the next record's first point (count + 1 records, the last is a sentinel). Area types seen: 1 water (seas, lakes, rivers), 3 forest / park, 5 built-up, 6 cemetery, 8 island.
+
+Bit reader detail: `FUN_00004c16` adds the width to the bit position, then `bfextu` extracts; a width of 0 extracts 32 bits **without moving** (68k bitfield width 0 = 32). The background units use a width of 0 for some fields.
+
+## POI (table 7, kind 6, not compressed)
+
+Unit: +8 slot (offset, count) of 28-byte records, +0x10 unit box. Record: +0 unit pointer and +4 offset of the **name** entry in table 11 (u16 offset of the text there), +6/+8 x/y (steps of 64 GPS units from the box corner), +10 **category**, +12 **brand** (text offset in this unit, e.g. "lukoil", "pko bank polski"), +16 u32 (?). 698 013 POI in 44 categories; names for the codes from the names under them (`POI_CATEGORIES` in the decoder): 12 fuel, 22 restaurant, 23 bank, 30 ATM, 36 church, 46 pharmacy, 56 school, 51 railway station, 52 airport, …
+
+## Search indexes (first look, seen in the data)
+
+Table d unit (kind 0x0c): slot 0 at 0x30 = 8-byte name entries (name, 0x00ff, second name, offset of a slot 1 record), slot 1 = 24-byte **city records**:
+
+| Offset | Content |
+|---|---|
+| +0 | unit pointer into table 10, +4 offset there, +6 count (the city's street list?) |
+| +8 | offset of a slot 2 run in this unit, +10 count |
+| +12 | unit pointer into **table 1** (a parcel), +16 offset of the city's place record (slot 1) in that parcel |
+
+Slot 2 = 8-byte (unit pointer into table 1, offset, count) entries; slot 4 = 12-byte entries (unit pointer into **table 11** = POI names, offset, count, name offset): the POI of the city. Table 10 units (kind 0x0f) hold 12-byte entries pointing back into table d units. To be decoded: the exact meaning of each pointer target, table f (street names) and 12/18.
+
 ## Next
 
-1. Segment attributes (road class, one-way, speed) from the bytes +10..+17 and the slot 9..12 tables; segment → name (text area).
-2. Areas (water, built-up), POI.
-3. The other tables (index of table 1, 7, f, 11, 12, …) and unit kinds 0x0e and 0x14..0x16.
+1. Search indexes: f (streets), d/e (cities), 11 (POI names), 10/12/18; the index parts (`a`) of tables 1, 7, 1e, 3, 2, 6, …
+2. Connections between parcels (slots 9/10, edge points of slot 6), the remaining segment bytes (+10, +11 low bits, +17), slots 7, 11, 12, the 32-bit POI field.
+3. Small tables 15, 14, 1d, 0, 4, a, b, c, 13, 17 (header data?), unit kind 0x0e unpacker (for completeness; table f is not compressed).
