@@ -116,7 +116,8 @@ def _fill_symbol(name, rgb):
 def areas_qml():
     """Areas by type; the fine level (0) up to 1:1 000 000, coarser levels further out."""
     rules, symbols, key = [], [], 0
-    for level, lo, hi in ((0, 1, 1_000_000), (1, 1_000_000, 4_000_000), (2, 4_000_000, 0)):
+    for level, lo, hi in ((0, 1, 1_000_000), (1, 1_000_000, 4_000_000), (2, 4_000_000, 8_000_000),
+                          (3, 8_000_000, 20_000_000), (4, 20_000_000, 50_000_000), (5, 50_000_000, 0)):
         for typ, rgb in AREA_COLOURS.items():
             scale = f' scalemindenom="{lo}"' + (f' scalemaxdenom="{hi}"' if hi else "")
             rules.append(f'<rule key="a{key}" symbol="{key}" label="poziom {level} typ {typ}" '
@@ -175,7 +176,10 @@ def overview_qml():
     <rules key="root">
       <rule key="o0" symbol="0" filter="&quot;level&quot; = 0" scalemindenom="2000000" scalemaxdenom="4000000"/>
       <rule key="o1" symbol="0" filter="&quot;level&quot; = 1" scalemindenom="4000000" scalemaxdenom="10000000"/>
-      <rule key="o2" symbol="0" filter="&quot;level&quot; = 2" scalemindenom="10000000"/>
+      <rule key="o2" symbol="0" filter="&quot;level&quot; = 2" scalemindenom="10000000" scalemaxdenom="20000000"/>
+      <rule key="o3" symbol="0" filter="&quot;level&quot; = 3" scalemindenom="20000000" scalemaxdenom="40000000"/>
+      <rule key="o4" symbol="0" filter="&quot;level&quot; = 4" scalemindenom="40000000" scalemaxdenom="80000000"/>
+      <rule key="o5" symbol="0" filter="&quot;level&quot; = 5" scalemindenom="80000000"/>
     </rules>
     <symbols>""" + _line_symbol("0", "#d04020", 0.4) + """
     </symbols>
@@ -185,14 +189,47 @@ def overview_qml():
 """
 
 
+def cities_qml():
+    """City points with their names, from 1:500 000 in."""
+    return """<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
+<qgis version="3.34" styleCategories="AllStyleCategories" labelsEnabled="1" hasScaleBasedVisibilityFlag="1" maxScale="1" minScale="500000">
+  <renderer-v2 type="singleSymbol">
+    <symbols>
+      <symbol name="0" type="marker" alpha="1" force_rhr="0" clip_to_extent="1">
+        <layer class="SimpleMarker" enabled="1" pass="0" locked="0">
+          <Option type="Map">
+            <Option name="name" type="QString" value="square"/>
+            <Option name="color" type="QString" value="30,30,30,255"/>
+            <Option name="size" type="QString" value="1.6"/>
+            <Option name="outline_color" type="QString" value="255,255,255,255"/>
+          </Option>
+        </layer>
+      </symbol>
+    </symbols>
+  </renderer-v2>
+  <labeling type="simple">
+    <settings calloutType="simple">
+      <text-style fieldName="name" fontSize="9" fontSizeUnit="Point" textColor="20,20,20,255"
+                  fontFamily="Sans Serif" isExpression="0" namedStyle="Bold">
+        <text-buffer bufferDraw="1" bufferSize="0.8" bufferSizeUnits="MM" bufferColor="255,255,255,255"/>
+      </text-style>
+      <placement placement="6" dist="1" distUnits="MM"/>
+      <rendering scaleVisibility="1" scaleMin="1" scaleMax="500000" obstacle="1"/>
+    </settings>
+  </labeling>
+  <layerGeometryType>0</layerGeometryType>
+</qgis>
+"""
+
+
 def write_styles(db, layers):
-    """layers: names present in the GeoPackage (only roads and parcels get styles)."""
+    """layers: names present in the GeoPackage (styles only for the layers listed here)."""
     db.execute("""CREATE TABLE IF NOT EXISTS layer_styles (id INTEGER PRIMARY KEY AUTOINCREMENT,
         f_table_catalog TEXT, f_table_schema TEXT, f_table_name TEXT, f_geometry_column TEXT,
         styleName TEXT, styleQML TEXT, styleSLD TEXT, useAsDefault BOOLEAN, description TEXT,
         owner TEXT, ui TEXT, update_time DATETIME DEFAULT CURRENT_TIMESTAMP)""")
     styles = {"roads": roads_qml(), "parcels": parcels_qml(), "areas": areas_qml(), "poi": poi_qml(),
-              "overview_roads": overview_qml()}
+              "overview_roads": overview_qml(), "cities": cities_qml()}
     for name, qml in styles.items():
         if name not in layers:
             continue

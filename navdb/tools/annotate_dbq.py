@@ -25,6 +25,8 @@ def main():
         i = args.index("--base")
         base = int(args[i + 1], 0)
         del args[i:i + 2]
+    if len(args) < 2 or args[0] in ("-h", "--help"):
+        sys.exit(__doc__.strip())
     src, dst = Path(args[0]), Path(args[1])
     index_path = Path(args[2]) if len(args) > 2 else dst.with_suffix(".index.txt")
     text = src.read_text()

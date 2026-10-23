@@ -95,7 +95,7 @@ class GeoPackage:
                 self.db.execute("UPDATE gpkg_contents SET min_x=?, min_y=?, max_x=?, max_y=? WHERE table_name=?",
                                 (*ext, name))
         if styles:
-            from qgis_style import write_styles
+            from .qgis_style import write_styles
             write_styles(self.db, self.layers)
         self.db.commit()
         self.db.close()

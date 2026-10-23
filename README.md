@@ -4,6 +4,11 @@ Emulator nawigacji Philips CARiN (Renault Carminat, Mk2) oparty na MAME. 68EC030
 
 Stan: instalacja oprogramowania z CD do flasha przechodzi, start z flasha uruchamia całą aplikację MMI bez power down (zapłon i wyświetlacz na magistrali nav są emulowane na sztywno). Ekran wideo działa (plansza startowa z ostrzeżeniem i przyciskiem OK); brakuje jeszcze wejścia z pilota/auta (szczegóły w [docs/carin_testowanie.md](docs/carin_testowanie.md), sekcja „Gdzie jesteśmy”).
 
+## Licencja
+
+Wydano na licencji "DO WHAT THE FUCK YOU WANT TO".
+Czyli róbta co chceta to tylko AI slop.
+
 ## Zawartość repo
 
 | Katalog | Co jest w środku |

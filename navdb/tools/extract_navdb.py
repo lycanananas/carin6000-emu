@@ -4,6 +4,7 @@
 usage: extract_navdb.py [disc.img] [outdir]
        (default: cd/carin_maps_pl_2012_2013.img -> temp/navdb/)
 """
+import argparse
 import struct
 import sys
 from pathlib import Path
@@ -13,10 +14,18 @@ SECTOR, DATA, USER = 2352, 24, 2048
 
 
 def main():
-    img_path = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "cd/carin_maps_pl_2012_2013.img"
-    out = Path(sys.argv[2]) if len(sys.argv) > 2 else ROOT / "temp/navdb"
+    p = argparse.ArgumentParser(description="Extracts the files of a NAV_DB map disc image "
+                                            "(ISO9660 in MODE2/2352 sectors), e.g. carindb.")
+    p.add_argument("image", nargs="?", type=Path, default=ROOT / "cd/carin_maps_pl_2012_2013.img",
+                   help="disc image (default: cd/carin_maps_pl_2012_2013.img)")
+    p.add_argument("outdir", nargs="?", type=Path, default=ROOT / "temp/navdb",
+                   help="output directory (default: temp/navdb)")
+    args = p.parse_args()
+    if not args.image.is_file():
+        p.error(f"{args.image} not found")
+    out = args.outdir
     out.mkdir(parents=True, exist_ok=True)
-    img = open(img_path, "rb")
+    img = open(args.image, "rb")
 
     def sector(lba):
         img.seek(lba * SECTOR + DATA)

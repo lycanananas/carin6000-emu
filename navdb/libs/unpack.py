@@ -86,7 +86,9 @@ class Unpacker:
         kind = struct.unpack_from(">H", unit, 4)[0]
         if kind == 0:
             self.parcel()
-        elif kind in (0x14, 0x15, 0x16):
+        elif kind in (0x14, 0x15, 0x16, 0x1C, 0x1D, 0x1E):
+            # pbp (release 14..21) zeroes compressed 0x1c..0x1e units; they share the background
+            # layout and unpack correctly with FUN_00004840
             self.shapes()
         else:
             return None                               # 0x0e: not ported yet
