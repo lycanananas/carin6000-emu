@@ -62,6 +62,8 @@ def parcel_level(f, gp, table, level, bbox, sizes, unpacker, progress):
     (unit pointer, 0 at the top)."""
     (_, _), (data, _), (end, _) = table
     n = roads = 0
+    if not data:
+        return
     for b, length, head in units(f, data, end):
         progress.step(f"roads, level {level}", b - data, end - data)
         x1, y1, x2, y2 = struct.unpack_from(">4I", head, 0x44)
@@ -173,6 +175,8 @@ def background(f, gp, tables, bbox, sizes, release, progress):
     for tid, level in BACKGROUND_LEVELS:
         (_, _), (data, _), (end, _) = tables[tid]
         na = nr = 0
+        if not data:
+            continue
         for b, length, head in units(f, data, end):
             progress.step(f"background, level {level}", b - data, end - data)
             x0, y0, x1, y1 = struct.unpack_from(">4i", head, 0x20)     # the 52-byte header is never compressed
@@ -230,6 +234,8 @@ def poi(f, gp, tables, bbox, progress):
     refs = UnitCache(open(f.name, "rb"))
     (_, _), (data, _), (end, _) = tables[7]
     n = 0
+    if not data:
+        return progress.finish("poi: table empty")
     for b, length, head in units(f, data, end):
         progress.step("poi", b - data, end - data)
         f.seek(b * BLOCK)
@@ -267,6 +273,8 @@ def cities(f, gp, tables, bbox, sizes, release, progress):
                                  ("alt_names", "TEXT"), ("trie_roots", "INTEGER"), ("block", "INTEGER")])
     unpacker = Unpacker(sizes, release, TEXT_TABLES)
     (_, _), (data, _), (end, _) = tables[0x0D]
+    if not data:
+        return progress.finish("cities: table empty")
     found = {}          # (unit block, record offset) -> [name, municipality, lang, alt names, parcel, segment, roots]
     for b, length, head in units(f, data, end):
         progress.step("cities (names)", b - data, end - data)

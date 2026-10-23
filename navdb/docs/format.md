@@ -184,11 +184,25 @@ into the unpacked unit), box (4 × u32) at 0x44, then (**checked**, all levels):
 | 0x54 | u32 pointer of the parcel's **house number unit** (kind 4, see below), 0 = none | 0 |
 | 0x58 | u32 **parent parcel** one routing level up (table 1 → 1e → 3 → 2; 0 at the top) | same |
 | 0x5c | 0 | **child grid cell size** = box width / 16 (slot 8) |
-| 0x60, 0x64, 0x68 | three u32 per parcel (open; not read by rpmod's router code found so far) | 0x20c49b each (2^31 / 1000, "infinite") |
+| 0x60, 0x64, 0x68 | **travel time to the routing level 3 / 2 / 1 network** in 0.1 s (rpmod `FUN_000195e2` ×100, `FUN_000012a4`: search radius per level = max(v × g_22a6, g_229a + v × g_229e), then ≥ previous × profile factor). **Checked** against Dijkstra with the router's default speeds: ≈ the mean over the parcel's nodes of the forward time to the nearest node of that level (within a few % for some parcels, up to ±30 % for others; Navteq's own speed model) | 0x20c49b each (2^31 / 1000, "infinite") |
 | 0x6c | 10 | 0 |
-| 0x70 | 0x01010000 / 0x00010000 / 0 (open) | 0x00010000 |
+| 0x70 | byte 0x70 = 1: **has a house number unit** (0x54; rpmod checks this byte before using 0x54); byte 0x71 = 1 in most parcels (open) | 0x00010000 |
 
 The first 116 bytes (type 0x0b) are never compressed.
+
+### Text area (slot 14)
+
+`count × 4` bytes of a name table (u16 text offset, u8 language, u8 flags: e.g. "spalato" language
+5 flag 2 for Split) in uncompressed units; **all zero after pbp unpacks a compressed unit**, so the
+software does not need it. The names follow, 0-terminated, unsorted, each once. Levels 1-3 have no
+text area (slot 14 = (0, 0)).
+
+### Writing parcels (encoder rule)
+
+Write each parcel as the **image pbp produces in RAM** from a compressed unit, stored uncompressed:
+slot 13 = (0, 0), segment +22 / +24 = 0, name table zero. That is the state 97 % of the original
+parcels are used in. `libs/parcelfmt.py` reproduces every original parcel byte for byte
+(`tests/test_parcelfmt.py`).
 
 ### Unpacking (`FUN_00003eb2`)
 
@@ -208,14 +222,14 @@ The first 116 bytes (type 0x0b) are never compressed.
 
 | Slot | Record | Content (checked on Warsaw unless noted) |
 |---|---|---|
-| 0, 1, 2 | 0x40 (10 B) | **place hierarchy**: +0 name, +2 second name, +4 parent record. Slot 0 country ("polska"), slot 1 city ("warszawa"), slot 2 street in a city/district ("ulica marszalkowska" / "srodmiescie" → warszawa) |
-| 3 | 0x12 (4 B) | raw, count + 1 (seen: pairs of offsets into slots 4/5; open) |
+| 0, 1, 2 | 0x40 (10 B) | **place hierarchy**: slot 0 countries (+0 name, +2 **country number** as in table b +40, e.g. 53 hrvatska, 191 slovenija), slot 1 cities (+0 name, +2 municipality text, +4 parent country record), slot 2 streets (+0 street name or 0, +2 settlement / district text or 0, +4 parent city record); +6, +8 0. Each slot starts and ends with an empty record (its +4 = the first / last record of the slot above). Records are sorted by name |
+| 3 | 0x12 (4 B) | **class index**, count 7 + 1 records: record k = (offset of the first segment of class ≥ k, offset of the first slot 5 node whose most important incident class is ≥ k); record 7 = ends. Segments are sorted by class, slot 5 nodes by their best incident class (**checked**, 246 / 246) |
 | 4 | 0x08 (32 B), 0x09 (26 B) on levels 1-3 | **road segments**, below |
-| 5 | 0x10 (8 B) | **nodes** inside the parcel: x, y, +4 a segment at this node (entry into the +6/+8 ring), +6 **node byte** (below), +7 0 |
+| 5 | 0x10 (8 B) | **nodes** inside the parcel: x, y, +4 a segment at this node (entry into the +6/+8 ring), +6 **node byte** (below), +7 0 (rarely 1, 2) |
 | 6 | 0x06 (16 B) | **edge points** (x or y = 0 or max): +0 x, +2 y, +4 owning segment, +6 flags (open), +8 u32 **neighbour parcel**, +12 offset of the **same point's edge record there**, +14 0. **Checked**: 10 220 of 10 220 sampled are reciprocal (same coordinates, pointing back) |
 | 7 | 0x0c (6 B) | **shape points**: x, y, u8 flags (0 / 2), u8; a segment's shape points run from its +4 to the next segment's +4 (dbq `FUN_000149ba`), in start → end order. **Checked**: they lie between the end points |
 | 8 | 4 B | levels 1-3 only: **16 × 16 grid of child parcel pointers** (the level below) over this parcel's box, cell = word 0x5c, column-major like the spatial index; 256 entries, repeated where one child covers several cells |
-| 9 | 0x0f (8 B) | **neighbour parcels**: u32 unit pointer, u16, u16 (open); the set equals the edge points' neighbours (**checked**, 407 parcels) |
+| 9 | 0x0f (8 B) | **neighbour parcels**: u32 unit pointer, u16 x, u16 y = a point on the shared border in 64-unit steps from this parcel's corner (often its middle); the set equals the edge points' neighbours (**checked**, 407 parcels) |
 | 10 | 0x14 (8 B) | **prohibited turns** (**confirmed**, rpmod `FUN_0000ce00` loads them, `FUN_0000bb24` checks, the successor iterators `FUN_0000b93a` / `FUN_0000b8ae` skip a listed target): u32 parcel of the target (nearly always this one), u16 target segment, u16 flags; a segment's entries run from its +18 to the next segment's +18 (rpmod `FUN_0001d28a`). Bit 0 selects the travel direction on the source: 0 = travelling end → start (via node = start), 1 = start → end (via node = end). The router keeps at most 8 per direction. Bit 1 is read by neither rpmod nor dbq. Entries whose target is not at the via node never match (harmless) |
 | 11 | 0x13 (6 B) | **signposts** (dbq `FUN_00004cfc`, used by guidance, not by the router): text (destination, "krakow"), text (route number, "e77"), u16 direction 0 / 1; a segment's entries run from its +30 to the next segment's +30 (level 0) |
 | 12 | 0x15 (6 B) | **segment attributes** (rpmod `FUN_0000d34e`, `FUN_000109a4`): u16 type, u16 value, u16 bits; a segment's entries run from its +20 to the next segment's +20. Type 5 = **ferry crossing time in minutes** (router: time = 60 × value s); types 6 / 7 = **TMC location** for travel start → end / end → start (value = location code, bits 4-9 of the third word = location table number, bits 0-3 = country code, bits 2/3 of byte +4 direction flags), 8 = TMC (both); TMC is not needed |
@@ -270,7 +284,7 @@ such segment, i.e. destination zones.
 
 | Bits | Meaning | Check |
 |---|---|---|
-| 0-2 | node type: 0 normal, 1 (edge +0x26; use open), 2 (rare), 4 / 5 = **pseudo node** (shape / attribute change, no turn penalty, rpmod `FUN_0000b2d6`) | |
+| 0-2 | node type by degree: 1 = **dead end** (degree 1), 5 = **pseudo node** (degree 2: attribute change; no turn penalty, rpmod `FUN_0000b2d6`), 0 = **junction** (degree ≥ 3); 4 rare (degree 2), 2 rare | **checked** on 41 000 nodes |
 | 4-5 | 1 = inside node (slot 5), 2 = **parcel edge point** (slot 6), 3 (rare) | |
 | 6-7 | **c = 3 − highest routing level the node exists on**: a node of level L also exists on level L + 1 iff c + L < 3 (rpmod `FUN_00015eb6`) | **checked**: levels 0, 1, 2: exactly the nodes with c + L < 3 have a node at the same coordinates in the parent parcel (+0x58), none of the others |
 
