@@ -146,22 +146,22 @@ def parcel_level(f, gp, table, level, bbox, sizes, unpacker, progress):
 # POI categories (record +10), named from the names found under each code around Warsaw; codes
 # not seen there are left unnamed.
 POI_CATEGORIES = {
-    11: "dealer samochodowy", 12: "stacja paliw", 13: "wypożyczalnia samochodów", 14: "parking",
-    15: "park & ride", 20: "atrakcja turystyczna", 21: "hotel / nocleg", 22: "restauracja / kawiarnia",
-    23: "bank", 24: "dom kultury", 25: "biblioteka", 26: "sąd / prokuratura", 29: "ambasada",
-    30: "bankomat", 31: "informacja turystyczna", 32: "muzeum", 33: "teatr / sala koncertowa",
-    35: "obiekt sportowy", 36: "kościół", 37: "cmentarz", 38: "tor / karting", 39: "park / rezerwat",
-    40: "centrum wystawowe", 41: "szpital", 42: "policja", 43: "urząd", 44: "poczta",
-    45: "przychodnia", 46: "apteka", 47: "sklep / centrum handlowe", 48: "miejscowość",
-    49: "kino", 50: "pole golfowe", 51: "stacja kolejowa", 52: "lotnisko", 54: "dworzec autobusowy",
-    56: "szkoła / przedszkole", 57: "rozrywka / nocne życie", 59: "serwis samochodowy",
-    61: "firma / zakład",
+    11: "car dealer", 12: "fuel station", 13: "car rental", 14: "parking",
+    15: "park & ride", 20: "tourist attraction", 21: "hotel / accommodation", 22: "restaurant / cafe",
+    23: "bank", 24: "culture centre", 25: "library", 26: "court / prosecutor", 29: "embassy",
+    30: "ATM", 31: "tourist information", 32: "museum", 33: "theatre / concert hall",
+    35: "sports facility", 36: "church", 37: "cemetery", 38: "race track / karting", 39: "park / reserve",
+    40: "exhibition centre", 41: "hospital", 42: "police", 43: "town hall / office", 44: "post office",
+    45: "clinic", 46: "pharmacy", 47: "shop / shopping centre", 48: "locality",
+    49: "cinema", 50: "golf course", 51: "railway station", 52: "airport", 54: "bus station",
+    56: "school / kindergarten", 57: "entertainment / nightlife", 59: "car service",
+    61: "company / plant",
 }
 
 
-AREA_TYPES = {1: "woda", 3: "las / park", 5: "zabudowa", 6: "cmentarz", 8: "wyspa / ląd"}
-LINE_TYPES = {101: "rzeka / kanał", 102: "kolej", 103: "granica?", 104: "droga główna", 105: "droga krajowa",
-              106: "droga wojewódzka"}
+AREA_TYPES = {1: "water", 3: "forest / park", 5: "built-up", 6: "cemetery", 8: "island / land"}
+LINE_TYPES = {101: "river / canal", 102: "railway", 103: "border?", 104: "main road", 105: "national road",
+              106: "regional road"}
 BACKGROUND_LEVELS = ((6, 0), (0x16, 1), (0x15, 2), (0x1C, 3), (0x14, 4), (0x1D, 5))
 
 

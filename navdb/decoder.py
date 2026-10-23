@@ -106,7 +106,8 @@ def parse_args():
                "replaced in an existing output file, the others stay.")
     p.add_argument("carindb", nargs="?", type=Path, default=DEFAULT_DB,
                    help=f"database file (default: {DEFAULT_DB.relative_to(ROOT)})")
-    p.add_argument("-o", "--output", type=Path, help="GeoPackage to write (default: temp/navdb/<area>.gpkg)")
+    p.add_argument("-o", "--output", type=Path,
+                   help="GeoPackage to write, or a directory to write it into (default: temp/navdb/<area>.gpkg)")
     where = p.add_mutually_exclusive_group()
     where.add_argument("-a", "--area", choices=AREAS, help="a named area")
     where.add_argument("-b", "--bbox", metavar="LON0,LAT0,LON1,LAT1", help="a box in degrees")
@@ -132,8 +133,27 @@ def parse_args():
     unknown = [x for x in args.layer_list if x not in LAYERS]
     if unknown:
         p.error(f"unknown layer {', '.join(unknown)}; choose from {', '.join(LAYERS)}")
+    if args.info:                            # nothing is written
+        return args
+    name = f"{args.area or ('bbox' if args.box else 'carindb')}.gpkg"
     if not args.output:
-        args.output = ROOT / "temp/navdb" / f"{args.area or ('bbox' if args.box else 'carindb')}.gpkg"
+        args.output = ROOT / "temp/navdb" / name
+    elif args.output.is_dir():
+        args.output = args.output / name     # a directory: the file goes inside it
+    elif args.output.suffix.lower() != ".gpkg":
+        p.error(f"{args.output}: the output must be a .gpkg file or a directory")
+    if args.output.exists() and not args.output.is_file():
+        p.error(f"{args.output} exists and is not a file")
+    if args.output.resolve() == args.carindb.resolve():
+        p.error("the output would overwrite the database")
+    if args.output.is_file():
+        with open(args.output, "rb") as f:
+            if f.read(16) != b"SQLite format 3\0":
+                p.error(f"{args.output} exists and is not a GeoPackage; choose another output")
+    try:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        p.error(f"cannot create {args.output.parent}: {e.strerror}")
     return args
 
 
@@ -147,7 +167,6 @@ def main():
         sizes, release = header_info(f)
         where = args.area or (args.bbox if args.box else "whole database")
         print(f"decoding {args.carindb.name} ({where}): {', '.join(args.layer_list)} -> {args.output}")
-        args.output.parent.mkdir(parents=True, exist_ok=True)
         progress = Progress(args.quiet)
         gp = GeoPackage(args.output)
         try:

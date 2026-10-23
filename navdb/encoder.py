@@ -368,7 +368,6 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     mkdisc.build(args.database, args.output, args.template_disc, False)
     print(f"disc: {args.output} + .cue in {time.monotonic() - t0:.0f} s")
-    print(f"test: tools/carin.py gui --state installed --cd {args.output.with_suffix('.cue')}")
 
 
 if __name__ == "__main__":
