@@ -194,7 +194,12 @@ def ram_options(args):
 
 
 def speed_options(args):
-    """Full speed by default; --realtime throttles to the real machine's speed."""
+    """Full speed by default; --realtime throttles to the real machine's speed, --speed X to X
+    times that (MAME -speed)."""
+    if args.speed is not None:
+        if not 0.01 <= args.speed <= 100:
+            sys.exit("--speed must be between 0.01 and 100")
+        return ["-speed", f"{args.speed:g}"]
     return [] if args.realtime else ["-nothrottle"]
 
 
@@ -338,8 +343,11 @@ def add_state_options(p):
     t.add_argument("--trace", metavar="CHANNELS",
                    help="'off', or a comma list of channels (ipc,mailbox,mcasic,arcnet,duart,nv,irq,cdrom,video)")
     t.add_argument("--trace-cap", type=int, metavar="BYTES", help="size cap of each trace file")
-    p.add_argument("--realtime", action="store_true",
+    s = p.add_mutually_exclusive_group()
+    s.add_argument("--realtime", action="store_true",
                    help="run at the real machine's speed (default: as fast as possible, -nothrottle)")
+    s.add_argument("--speed", type=float, metavar="X",
+                   help="run at X times the real machine's speed, e.g. 2 or 0.5 (1 = --realtime)")
     p.add_argument("-b", "--build", action="store_true", help="build MAME first")
     p.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 2, help="build jobs")
     p.add_argument("mame_args", nargs="*", help="extra MAME options (after --)")

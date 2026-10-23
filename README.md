@@ -138,6 +138,7 @@ Emulation runs as fast as possible (`--realtime` slows it to real time), without
 tools/carin.py gui --state installed
 tools/carin.py gui --state installed --debug     # with the MAME debugger
 tools/carin.py gui --state installed --realtime  # at the real unit's speed
+tools/carin.py gui --state installed --speed 2   # twice the real speed (any factor 0.01-100)
 tools/carin.py gui -- -resolution 1320x1248      # extra MAME options after "--"
 ```
 
@@ -145,7 +146,7 @@ One window opens (layout `mame/src/mame/layout/carin.lay`): the navigation scree
 
 Ignition: the IGNITION button in the CAR section of the panel or the **I** key (toggle). After switching it off, the system saves its settings to NV after about 25 s and powers down, and the slave cuts the power (black screen). Switching the ignition on again starts the unit. This is how to force saving the settings before closing MAME.
 
-Keyboard: 1 Mute nav, 2 Last message, 3 VOL+, 4 VOL−, 5 knob push, 7 Stand by, 8 Address book, ←/→ knob; 6 and 9 start the diagnostic self-test; Q/W/E/R are codes the software does not handle. Names and keys can be changed in MAME (Tab → Input). By default emulation runs as fast as possible (`-nothrottle`); `--realtime` slows it to the real unit's speed. The MAME menu (Tab) always works; `gui` starts MAME with `-ui_active`. A disc is inserted while running through Tab → File Manager → cdrom (eject: "[empty slot]").
+Keyboard: 1 Mute nav, 2 Last message, 3 VOL+, 4 VOL−, 5 knob push, 7 Stand by, 8 Address book, ←/→ knob; 6 and 9 start the diagnostic self-test; Q/W/E/R are codes the software does not handle. Names and keys can be changed in MAME (Tab → Input). By default emulation runs as fast as possible (`-nothrottle`); `--realtime` slows it to the real unit's speed, `--speed X` runs it at X times that. The MAME menu (Tab) always works; `gui` starts MAME with `-ui_active`. A disc is inserted while running through Tab → File Manager → cdrom (eject: "[empty slot]").
 
 ## Custom discs (cfw)
 
