@@ -137,3 +137,20 @@ def rows(gpkgs, sql, params=()):
                     continue
                 seen.add(row[0])
             yield row
+
+
+STRIPES = 32           # fixed, so the output does not depend on the number of workers
+
+
+def prows(gpkgs, sql, params, func):
+    """func(rows) for vertical stripes of the query (by the feature's minx, so no feature is in
+    two stripes) in worker processes; the lists func returns, joined in stripe order. sql uses
+    the alias r for the R-tree and ends with a condition."""
+    from .par import pmap
+    x0, x1 = params[0], params[1]          # bbox lon0 / lon1 come first (r.maxx >= ?, r.minx <= ?)
+    xs = [x0 + (x1 - x0) * i / STRIPES for i in range(STRIPES + 1)]
+    xs[0], xs[-1] = -1e9, 1e9
+    jobs = list(zip(xs, xs[1:]))
+    part = lambda st: func(rows(gpkgs, sql + " AND r.minx >= ? AND r.minx < ?", tuple(params) + st))
+    return [x for out in pmap(part, jobs, 2) for x in out]
+

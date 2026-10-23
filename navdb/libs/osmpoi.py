@@ -132,6 +132,7 @@ def load(gpkg, bbox, country):
 
 def place(pois, places, parcels, sorted_pieces):
     """City, district and access segment of every POI."""
+    places.cache.clear()                    # the answers must not depend on earlier lookups
     grid, cell = {}, 1 << 13
     for pc in parcels:
         for idx, piece in enumerate(sorted_pieces(pc)):

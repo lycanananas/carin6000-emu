@@ -180,11 +180,17 @@ def _linestring(blob):
 def load(gpkg, bbox, detail="normal"):
     """Network of the roads whose bounding box lies in bbox (lon0, lat0, lon1, lat1); gpkg = one
     GeoPackage or a list (rows deduplicated by OSM id)."""
-    from .osmsrc import rows as osm_rows
-    rows = osm_rows(gpkg,
+    from .osmsrc import prows
+    ways = prows(gpkg,
         "SELECT l.osm_id, l.name, l.highway, l.other_tags, l.geom FROM lines l "
         "JOIN rtree_lines_geom r ON l.fid = r.id WHERE r.maxx >= ? AND r.minx <= ? AND r.maxy >= ? "
-        "AND r.miny <= ? AND l.highway IS NOT NULL", (bbox[0], bbox[2], bbox[1], bbox[3]))
+        "AND r.miny <= ? AND l.highway IS NOT NULL", (bbox[0], bbox[2], bbox[1], bbox[3]),
+        lambda rows: _ways(rows, bbox, detail))
+    return build(ways)
+
+
+def _ways(rows, bbox, detail):
+    """(road, points) of the road rows (in a worker)."""
     ways = []
     for osm_id, name, highway, other, geom in rows:
         tags = hstore(other)
@@ -204,7 +210,7 @@ def load(gpkg, bbox, detail="normal"):
                 pts.append(p)
         if len(pts) >= 2:
             ways.append((road, pts))
-    return build(ways)
+    return ways
 
 
 def build(ways):

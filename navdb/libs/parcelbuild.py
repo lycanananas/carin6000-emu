@@ -60,7 +60,11 @@ def tile(edges, bbox_gps):
     split while the estimated parcel size exceeds MAX_BYTES."""
     root = aligned_root(bbox_gps)
     ax, ay, size = root.x, root.y, root.size
-    load = [(e.points(), 48 + 6 * len(e.shape) + 2 * len(e.road.name or "")) for e in edges]
+    load = []
+    for e in edges:
+        pts = e.points()
+        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+        load.append(((min(xs), min(ys), max(xs), max(ys)), 48 + 6 * len(e.shape) + 2 * len(e.road.name or "")))
 
     def split(box, items):
         if box.size > MAX_SIZE or (box.size > MIN_SIZE and sum(c for _, c in items) > MAX_BYTES):
@@ -69,7 +73,8 @@ def tile(edges, bbox_gps):
             for dx in (0, h):
                 for dy in (0, h):
                     b = Box(box.x + dx, box.y + dy, h)
-                    sub = [(pts, c) for pts, c in items if _touches(b, pts)]
+                    x0, y0, x1, y1 = b.x, b.y, b.x + h, b.y + h
+                    sub = [(bb, c) for bb, c in items if bb[0] < x1 and bb[2] >= x0 and bb[1] < y1 and bb[3] >= y0]
                     leaves += split(b, sub)
             return leaves
         return [box] if items else []
@@ -123,6 +128,7 @@ class Parcel:
     offsets: dict = field(default_factory=dict)      # point -> offset of its record (after layout)
     seg_base: int = 0                                # offset of slot 4 (after layout)
     turns: dict = None                               # prohibited turns (osmturns.assign)
+    order: list = None                               # sorted_pieces() cache
 
 
 def _nudge(p, box):
@@ -307,8 +313,10 @@ class Strings:
 
 def sorted_pieces(parcel):
     """Segment order in the parcel (by class, as the class index needs), shared with the house
-    number unit."""
-    return sorted(parcel.pieces, key=lambda p: (p.road.cls, p.road.name or "", p.points[0]))
+    number unit; kept on the parcel while its pieces stay the same."""
+    if parcel.order is None or len(parcel.order) != len(parcel.pieces):
+        parcel.order = sorted(parcel.pieces, key=lambda p: (p.road.cls, p.road.name or "", p.points[0]))
+    return parcel.order
 
 
 def node_type(degree):

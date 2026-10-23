@@ -103,6 +103,19 @@ def _name(raw):
     return fold(raw), fold(m.group(1)), fold(m.group(2))
 
 
+def _admin_areas(rows):
+    """(name, level, outer rings simplified to 10 m) of admin area rows (in a worker)."""
+    from .levels import simplify
+    out = []
+    for _, name, level, geom in rows:
+        if not name or not fold(name):
+            continue
+        rings = [r for r in (simplify(ring, 10) for ring in _polygons(geom)) if len(r) >= 4]
+        if rings:
+            out.append((name, int(level), rings))
+    return out
+
+
 class Area:
     def __init__(self, raw, rings):
         self.name, self.base, self.qual = _name(raw)
@@ -118,21 +131,19 @@ class Area:
 
 class Places:
     def __init__(self, gpkg, bbox, country):
-        from .osmsrc import rows
+        from .osmsrc import prows, rows
         self.country = country
         lv = {*country.levels[0], *country.levels[1:]}   # OSM admin levels: city, municipality, settlement, district
         self.levels = {k: [] for k in lv}
         self.grids = {k: Grid() for k in lv}
-        for _, name, level, geom in rows(gpkg,
+        for name, level, rings in prows(gpkg,
                 "SELECT coalesce('r' || m.osm_id, 'w' || m.osm_way_id), m.name, m.admin_level, m.geom FROM multipolygons m JOIN rtree_multipolygons_geom r "
                 "ON m.fid = r.id WHERE r.maxx >= ? AND r.minx <= ? AND r.maxy >= ? AND r.miny <= ? AND "
                 "m.boundary = 'administrative' AND m.admin_level IN (%s)" % ",".join("'%d'" % k for k in set(lv)),
-                (bbox[0], bbox[2], bbox[1], bbox[3])):
-            rings = _polygons(geom)
-            if rings and name and fold(name):
-                a = Area(name, rings)
-                self.levels[int(level)].append(a)
-                self.grids[int(level)].add(a.box, a)
+                (bbox[0], bbox[2], bbox[1], bbox[3]), _admin_areas):
+            a = Area(name, rings)
+            self.levels[level].append(a)
+            self.grids[level].add(a.box, a)
         self.nodes = Grid()
         for _, name, place, geom in rows(gpkg,
                 "SELECT p.osm_id, p.name, p.place, p.geom FROM points p JOIN rtree_points_geom r ON p.fid = r.id "

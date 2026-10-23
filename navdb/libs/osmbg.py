@@ -112,8 +112,7 @@ def _all_rings(blob):
 def load(gpkg, bbox, edges, towns):
     """Shapes of the area: OSM areas and lines, our road edges (class <= 3), town areas (admin
     level 8 areas of places that are towns: [(name, ring)])."""
-    from .osmsrc import rows
-    shapes = []
+    from .osmsrc import prows
     q = ("SELECT coalesce('r' || m.osm_id, 'w' || m.osm_way_id), m.name, m.natural, m.landuse, m.leisure, m.amenity, m.place, m.other_tags, m.geom "
          "FROM multipolygons m JOIN rtree_multipolygons_geom r ON m.fid = r.id "
          "WHERE r.maxx >= ? AND r.minx <= ? AND r.maxy >= ? AND r.miny <= ? AND "
@@ -121,7 +120,31 @@ def load(gpkg, bbox, edges, towns):
          "'residential', 'commercial', 'retail', 'industrial') OR m.leisure IN ('park', 'nature_reserve', "
          "'garden') OR m.amenity = 'grave_yard' OR m.place IN ('island', 'islet') OR "
          "m.other_tags LIKE '%riverbank%')")
-    for _, name, nat, land, leis, amen, place, other, geom in rows(gpkg, q, (bbox[0], bbox[2], bbox[1], bbox[3])):
+    shapes = prows(gpkg, q, (bbox[0], bbox[2], bbox[1], bbox[3]), _areas)
+    for name, ring in towns:                    # towns as named built-up areas on the coarse levels
+        shapes.append(Shape(5, name, ring, _metres_area(ring), _centre(ring), (2, 5)))
+    shapes += prows(gpkg,
+            "SELECT l.osm_id, l.name, l.waterway, l.railway, l.geom FROM lines l JOIN rtree_lines_geom r ON l.fid = r.id "
+            "WHERE r.maxx >= ? AND r.minx <= ? AND r.maxy >= ? AND r.miny <= ? AND "
+            "(l.waterway IN ('river', 'canal') OR l.railway = 'rail')", (bbox[0], bbox[2], bbox[1], bbox[3]), _lines)
+    return _finish(shapes, edges)
+
+
+def _lines(rows):
+    """River, canal and railway shapes of the rows (in a worker)."""
+    from .osmnet import _linestring
+    out = []
+    for _, name, waterway, railway, geom in rows:
+        pts = simplify([gps(*p) for p in _linestring(geom)], TOLERANCE[0])
+        if len(pts) >= 2:
+            out.append(Shape(101 if waterway else 102, fold(name) if waterway else None, pts))
+    return out
+
+
+def _areas(rows):
+    """Area shapes of the rows (in a worker)."""
+    shapes = []
+    for _, name, nat, land, leis, amen, place, other, geom in rows:
         tags = hstore(other)
         tags.update({k: v for k, v in (("natural", nat), ("landuse", land), ("leisure", leis),
                                        ("amenity", amen), ("place", place)) if v})
@@ -129,23 +152,24 @@ def load(gpkg, bbox, edges, towns):
         if kind is None:
             continue
         for outer, inners in _all_rings(geom):
+            outer = simplify(outer, TOLERANCE[0])          # full OSM detail is never drawn
             ring = outer[:-1] if outer[0] == outer[-1] else outer
+            if len(ring) < 3:
+                continue
             shapes.append(Shape(kind, fold(name) if kind != 5 else None, ring, _metres_area(ring), _centre(ring),
                                 (0, 1) if kind == 5 else (0, 5)))     # landuse built-up: fine levels only
             if kind == 1:                       # islands in water: land drawn over it
                 for inner in inners:
+                    inner = simplify(inner, TOLERANCE[0])
                     r = inner[:-1] if inner[0] == inner[-1] else inner
+                    if len(r) < 3:
+                        continue
                     shapes.append(Shape(8, None, r, _metres_area(r), _centre(r)))
-    for name, ring in towns:                    # towns as named built-up areas on the coarse levels
-        shapes.append(Shape(5, name, ring, _metres_area(ring), _centre(ring), (2, 5)))
-    for _, name, waterway, railway, geom in rows(gpkg,
-            "SELECT l.osm_id, l.name, l.waterway, l.railway, l.geom FROM lines l JOIN rtree_lines_geom r ON l.fid = r.id "
-            "WHERE r.maxx >= ? AND r.minx <= ? AND r.maxy >= ? AND r.miny <= ? AND "
-            "(l.waterway IN ('river', 'canal') OR l.railway = 'rail')", (bbox[0], bbox[2], bbox[1], bbox[3])):
-        from .osmnet import _linestring
-        pts = [gps(*p) for p in _linestring(geom)]
-        if len(pts) >= 2:
-            shapes.append(Shape(101 if waterway else 102, fold(name) if waterway else None, pts))
+    return shapes
+
+
+def _finish(shapes, edges):
+    """Rivers get their levels by length; our roads (class <= 3) are added."""
     river_len = {}
     for s in shapes:
         if s.kind == 101 and s.name:

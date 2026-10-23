@@ -455,6 +455,10 @@ What `navdb/encoder.py` does, as rules any writer must follow:
    leaves stay inside one name unit, linked lists, city destinations; block 0 0x0c / 0x44 = the
    country trie root count; block 2 slot 2 = only our country (settings of its template country).
    Trie leaves are split by size too (big cities' street lists).
+   **Prohibited turns** (slot 10) from OSM restriction relations via a node, read from the .osm.pbf
+   (`libs/osmturns.py`): no_* = that turn, only_* = every other turn at the node; the target is a
+   segment of the same parcel (offset), bit 0 = the source's direction (1 = its end is the via
+   node). The original passes the same check in 93 % of its parcels.
 7. **POI** (basic set): table 7 points in quadtree tiles (≤ 2^21, ≤ 400 points), table 11 lists
    per (gmina, category) with one access segment each (the nearest road, motorways avoided),
    table 12 tries; city records list their categories, the country record airports and museums;

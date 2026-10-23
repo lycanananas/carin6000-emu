@@ -15,7 +15,6 @@ carindb (temp/navdb/carindb) and disc are the templates for the metadata. Check 
 """
 import argparse
 import builtins
-import gc
 import heapq
 import resource
 import sys
@@ -31,6 +30,7 @@ from libs import (countries, dbwrite, levels, osmaddr, osmbg, osmnet, osmplaces,
                   parcelfmt, search, spindex)
 from libs.carindb import TEXT_TABLES, header_info
 from libs.osmnet import gps
+from libs.par import pmap
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "navdb/tools"))
@@ -135,7 +135,6 @@ def travel_times(edges, top, parcels):
 
 def print(*a, **kw):
     """Progress lines with time and peak memory."""
-    gc.collect()
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6
     builtins.print(*a, f"[{time.monotonic() - T0:.0f} s, {peak:.1f} GB]", **kw)
 
@@ -181,15 +180,21 @@ def main():
     # network and places
     net = osmnet.load(osm, bbox, args.detail)
     places = osmplaces.Places(osm, bbox, country)
-    roads = {}
+    roads, mids = {}, []
     for e in net.edges:
         r = e.road
         if id(r) not in roads:
-            mid = e.points()[len(e.points()) // 2]
-            r.city, r.muni = places.city_of(mid)
-            r.settlement = places.settlement_of(mid)
-            r.name = osmplaces.street_name(r.name, country) or r.ref
             roads[id(r)] = r
+            mids.append(e.points()[len(e.points()) // 2])
+    step = 20000                            # city / settlement of every road, in worker processes
+    def where(chunk):                       # city_of caches per cell: a fresh cache per chunk
+        places.cache.clear()                # keeps the result independent of the workers
+        return [(*places.city_of(p), places.settlement_of(p)) for p in chunk]
+    found = [w for part in pmap(where, [mids[i:i + step] for i in range(0, len(mids), step)], 2) for w in part]
+    for r, (city, muni, settlement) in zip(roads.values(), found):
+        r.city, r.muni, r.settlement = city, muni, settlement
+        r.name = osmplaces.street_name(r.name, country) or r.ref
+    del mids, found
     print(f"roads: {len(net.edges)} edges, {len(net.nodes)} nodes; "
           f"{len({(r.city, r.muni) for r in roads.values()})} cities, "
           f"{len({r.settlement for r in roads.values()} - {None})} settlements")
@@ -221,6 +226,8 @@ def main():
             if child.parent:
                 child.parent.children.append(child)
     travel_times(net.edges, top, by_level[0])
+    bg_roads = [e for e in net.edges if e.road.cls <= 3 and e.road.kind != 5]     # for the background
+    del net, keep_by, inc_by, edges          # the network lives on in the parcels
     for k, pcs in by_level.items():
         print(f"level {k}: {len(pcs)} parcels, {sum(len(pc.pieces) for pc in pcs)} segments, "
               f"{sum(len(pc.borders) for pc in pcs) // 2} border crossings"
@@ -261,11 +268,19 @@ def main():
     db.add(dbwrite.Table("hn", hn_units))
 
     # search: cities and streets (positions = middle of their segments)
-    for pc in by_level[0]:                  # lays the parcels out (segment offsets for table f)
-        parcelbuild.build_level0(pc, ctx)
-    for k in (1, 2, 3):                     # and the upper levels (edge point offsets their
-        for pc in by_level[k]:              # neighbours read; the units are built in workers)
+    # lay the parcels out (segment offsets for table f, edge point offsets the neighbours read),
+    # in workers that hand the offsets back; the units themselves are built later, in workers too
+    def lay_out(job):
+        k, pc = job
+        if k == 0:
+            parcelbuild.build_level0(pc, ctx)
+        else:
             levels.build_upper(pc, k, ctx)
+        return pc.offsets, pc.seg_base
+    jobs = [(k, pc) for k in (0, 1, 2, 3) for pc in by_level[k]]
+    for (_, pc), (offsets, base) in zip(jobs, pmap(lay_out, jobs)):
+        pc.offsets, pc.seg_base = offsets, base
+    del jobs
     sums = {}
     for pc in by_level[0]:
         for piece in pc.pieces:
@@ -333,7 +348,7 @@ def main():
         (bbox[0], bbox[2], bbox[1], bbox[3])) if n}
     towns = [(a.name, ring) for a in places.levels[country.levels[2]] if (a.base or a.name) in town_names
              for ring in a.rings]
-    shapes = osmbg.merge_lines(osmbg.clip_to_area(osmbg.load(osm, bbox, net.edges, towns), gbox))
+    shapes = osmbg.merge_lines(osmbg.clip_to_area(osmbg.load(osm, bbox, bg_roads, towns), gbox))
     for level in range(6):
         tiles = osmbg.tiles(level, gbox, osmbg.level_shapes(shapes, level), parcelbuild.ORIGIN)
         bkeys = [("bg", level, n) for n in range(len(tiles))]

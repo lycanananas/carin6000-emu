@@ -25,9 +25,9 @@ Otwórz plik `.gpkg` w QGIS. Style wczytują się same.
 ### B. Zrobić własną płytę z mapą z OpenStreetMap
 
 ```bash
-python3 navdb/encoder.py warszawa       # Warszawa (~40 s) -> cd/carin_warszawa.img + .cue
-python3 navdb/encoder.py polska         # cała Polska
-python3 navdb/encoder.py serbia         # cała Serbia
+python3 navdb/encoder.py warszawa       # Warszawa (~15 s) -> cd/carin_warszawa.img + .cue
+python3 navdb/encoder.py polska         # cała Polska (~11 min, 10 GB RAM, płyta 558 MB)
+python3 navdb/encoder.py serbia         # cała Serbia (~2 min, 3 GB RAM, płyta 138 MB)
 python3 navdb/encoder.py beograd        # Belgrad (szybki test Serbii)
 ```
 
@@ -112,6 +112,7 @@ Co trafia do bazy (wszystko z OSM i tylko dla wybranego obszaru):
 
 - **Drogi** na 4 poziomach routingu, czyli tak jak w oryginale: od wszystkich ulic po same autostrady. Każda ma kształt, klasę, rodzaj (autostrada, ekspresówka, łącznica, prom), kierunkowość, ronda i ograniczenia dostępu.
 - **Topologia do routingu**: skrzyżowania, przejścia między parcelami, połączenia między poziomami, czasy dojazdu do szybkich dróg.
+- **Zakazy skrętu** z relacji `restriction` OSM (`no_*` i `only_*` przez węzeł; czytane wprost z pliku `.osm.pbf`). Pomijane są zakazy przez drogę (via way) i te tylko dla innych pojazdów. W Polsce trafia ok. 70 % zakazów.
 - **Numery domów** z adresów OSM, przypisane do odcinków po lewej i prawej stronie.
 - **Wyszukiwanie adresów**: kraj → gminy, miejscowości i dzielnice → ulice (po dowolnym słowie nazwy, np. „mickiewicza”) → numer.
 - **POI** (podstawowe): stacje paliw, dealerzy i serwisy samochodowe, wypożyczalnie aut, P&R, hotele, szpitale, policja, dworce kolejowe i autobusowe, lotniska, muzea. Są na mapie, w wyszukiwaniu POI w mieście (gmina) i — lotniska i muzea — w całym kraju. Każdy POI ma nazwę, markę, adres, telefon i odcinek dojazdu do nawigacji. Warszawa: ok. 1600 POI.
@@ -120,7 +121,7 @@ Co trafia do bazy (wszystko z OSM i tylko dla wybranego obszaru):
 
 Czego jeszcze nie ma:
 - **listy marek POI** (menu „marka” w wyszukiwaniu POI jest puste; marka jest przy samym POI);
-- **zakazy skrętu**: wymagają relacji `restriction` z OSM;
+- **zakazy skrętu przez drogę** (via way) i zależne od czasu;
 - **drogowskazy** (kierunki na znakach).
 
 TMC (komunikaty drogowe przez RDS) jest pusty celowo, bo nie jest używany.
@@ -131,7 +132,7 @@ Dane mapy pochodzą wyłącznie z OSM. Z oryginalnej płyty enkoder bierze tylko
 
 **Kompresja.** Parcele dróg (największa część bazy) są kompresowane tym samym kodem bitowym co w oryginale. Kompresor to dokładna odwrotność rozpakowywania z urządzenia; na oryginalnych parcelach daje identyczny wynik po rozpakowaniu i ok. 2× mniejsze dane. Pozostałe jednostki są zapisywane nieskompresowane, co format dopuszcza.
 
-Rozmiary (z dietą i kompresją): Warszawa ok. 15 MB, Mazowsze ok. 70 MB. Cała Polska powinna zmieścić się na płycie CD-R 80 min (ok. 730 MB); enkoder ostrzega, jeśli obraz jest za duży. Na całą Polskę enkoder potrzebuje kilkunastu GB RAM.
+Rozmiary (z dietą i kompresją): Warszawa ok. 15 MB, Mazowsze ok. 70 MB. Cała Polska powinna zmieścić się na płycie CD-R 80 min (ok. 730 MB); enkoder ostrzega, jeśli obraz jest za duży. Enkoder pracuje na wszystkich rdzeniach (do 16). Wynik nie zależy od ich liczby, a `NAVDB_WORKERS=1` wyłącza pracę równoległą. Cała Polska na 20 rdzeniach zajmuje ok. 11 min i 10 GB RAM.
 
 Dane OSM są na licencji ODbL: © OpenStreetMap contributors. Płyta zawiera tę informację w COPYRIGH.
 
@@ -179,6 +180,8 @@ navdb/
 | `layers.py`, `gpkg.py`, `qgis_style.py` | dekoder: warstwy, zapis GeoPackage, style QGIS |
 | `osmsrc.py` | enkoder: pobieranie i konwersja regionów Geofabrik, odczyt z wielu plików |
 | `countries.py` | enkoder: kraje (numer, język, poziomy administracyjne OSM) i regiony |
+| `osmturns.py` | enkoder: zakazy skrętu z relacji OSM (czytnik `.osm.pbf`) |
+| `par.py` | enkoder: praca równoległa w procesach (fork); `NAVDB_WORKERS=1` wyłącza |
 | `osmnet.py`, `osmplaces.py`, `osmaddr.py`, `osmbg.py`, `osmpoi.py` | enkoder: drogi, miejscowości, adresy, tło i POI z OSM |
 | `pack.py` | kompresja parceli (odwrotność `pbp`) |
 | `parcelbuild.py`, `levels.py`, `search.py`, `dbwrite.py` | enkoder: parcele, poziomy routingu, wyszukiwanie, składanie pliku |
