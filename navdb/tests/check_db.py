@@ -112,14 +112,32 @@ def check_parcel(d, ptr, level, sizes, get, res):
         px0, py0, px1, py1 = struct.unpack_from(">4i", pd, 0x44)
         bx0, by0, bx1, by1 = struct.unpack_from(">4i", d, 0x44)
         res["parent contains parcel"][px0 <= bx0 and bx1 <= px1 and py0 <= by0 and by1 <= py1] += 1
-        up = set()
+        up = {}                         # parent point -> offset of its node record
         for k, size in ((5, 8), (6, 16)):
             so, sc = w(pd, 8 + 4 * k), w(pd, 10 + 4 * k)
-            up |= {(px0 + w(pd, so + size * j) * 64, py0 + w(pd, so + size * j + 2) * 64) for j in range(sc)}
+            up.update({(px0 + w(pd, so + size * j) * 64, py0 + w(pd, so + size * j + 2) * 64): so + size * j
+                       for j in range(sc)})
+        p4, pc4 = w(pd, 8 + 16), w(pd, 10 + 16)
+        parent_heads = {}               # parent node offset -> headings of its segments there
+        for i in range(pc4):
+            r = p4 + sizes[0x09] * i
+            parent_heads.setdefault(w(pd, r), set()).add(pd[r + 14])
+            parent_heads.setdefault(w(pd, r + 2), set()).add(pd[r + 15])
+        top_class = {0: 2, 1: 1, 2: 0}[level]
         for j in range(c5):
             o = s5 + 8 * j
             c = d[o + 6] >> 6
-            res["node goes up iff c + level < 3"][((x0 + w(d, o) * 64, y0 + w(d, o + 2) * 64) in up) == (c + level < 3)] += 1
+            pt = (x0 + w(d, o) * 64, y0 + w(d, o + 2) * 64)
+            res["node goes up iff c + level < 3"][(pt in up) == (c + level < 3)] += 1
+            if pt not in up:
+                continue
+            # the router finds the parent's segment by the heading at the node (rpmod FUN_000160d8)
+            heads = parent_heads.get(up[pt], set())
+            for r in segs:
+                if d[r + 16] & 15 <= top_class:
+                    for end, h in ((0, 14), (2, 15)):
+                        if w(d, r + end) == o:
+                            res["heading at an up node exists in the parent"][d[r + h] in heads] += 1
     if level > 0:
         cell = struct.unpack_from(">I", d, 0x5c)[0]
         s8, c8 = w(d, 8 + 32), w(d, 10 + 32)
@@ -189,6 +207,7 @@ def main():
                                   "class index (slot 3)", "segment ends are nodes", "node used by a segment",
                                   "node ring = degree", "node type by degree", "edge point reciprocal",
                                   "slot 9 = edge point neighbours", "shape ranges increase",
+                                  "heading at an up node exists in the parent",
                                   "prohibited turn -> segment at the via node",
                                   "spatial index -> covering unit", "background layout round trip",
                                   "background groups and end records")}

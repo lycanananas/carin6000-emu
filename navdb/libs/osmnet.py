@@ -102,6 +102,7 @@ class Road:
     figure: int = 0      # +17 low nibble: 6 roundabout, 3 restricted
     access: int = 2      # +17 high nibble: 2 normal, 4 destination only, 1 never
     paved: int = 1
+    toll: int = 0        # +11 bit 6: a toll / vignette road (the router adds a cost)
     osm_id: str = ""
     ref: str = None
     city: str = None
@@ -116,6 +117,8 @@ class Edge:
     shape: list          # points between a and b
     road: Road
     length: int = 0      # metres
+    h0: int = None       # heading at a / at b (+14 / +15); None = from the points. Upper levels
+    h1: int = None       # take them from level 0, as the router matches levels by heading
 
     def points(self):
         return [self.a, *self.shape, self.b]
@@ -155,7 +158,8 @@ def road_attrs(highway, tags, name, detail="normal"):
     if not tags.get("ref") is None and fow == 12:
         fow = 11
     paved = 0 if tags.get("surface") in UNPAVED or highway == "track" else 1
-    return Road(fold(name), cls, fow, oneway, kind, figure, access, paved, ref=fold(tags.get("ref")))
+    toll = 1 if tags.get("toll") == "yes" or tags.get("toll:motorcar") == "yes" else 0
+    return Road(fold(name), cls, fow, oneway, kind, figure, access, paved, toll, ref=fold(tags.get("ref")))
 
 
 def _int(v, default=0):

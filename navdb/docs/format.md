@@ -277,6 +277,17 @@ their own level.
   level L path between them (**checked**: same length). Up: parent pointer + same coordinates;
   down: the child grid. The router searches level 0 near start and destination until it reaches
   nodes that go up, continues on the coarse levels and comes down again.
+- **Going up matches segments by heading** (**confirmed** rpmod `FUN_000169c4` → `FUN_000165cc`
+  → `FUN_00015fc8` / `FUN_000160d8`): the router loads the parent (+0x58), finds the node with the
+  same coordinates (slot 5, then slot 6) and walks its ring for the segment whose heading at the
+  node (+14 at its start, +15 at its end) **equals** the heading of the segment it came along;
+  none = error 0x19b and the route is not found. So an upper level segment keeps the level 0
+  headings at its nodes, also when its shape is simplified (**checked** on the original: every
+  class ≤ 2 / ≤ 1 / 0 heading at a node that goes up exists in the parent; `tests/check_db.py`).
+  The encoder's first discs broke this (headings from the simplified shape): the router went up
+  to level 1, failed and started over.
+- Segment +11 bit 6 only adds a cost (`FUN_0000b622`: + 0x100 × the segment's cost factor), most
+  likely a toll flag; never set in Poland on the original.
 
 ### Router cost model (rpmod)
 

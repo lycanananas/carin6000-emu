@@ -114,6 +114,8 @@ class Piece:
     length: int
     border: tuple = (False, False)     # start / end is an edge point
     hn: tuple = None                   # house numbers (osmaddr.assign)
+    h0: int = None                     # heading at the start / end node from level 0 geometry
+    h1: int = None                     # (None: from the points; edge points always so)
 
 
 @dataclass(eq=False, slots=True)
@@ -221,6 +223,8 @@ def clip(edges, leaves):
 
     for e in edges:
         pts = e.points()
+        geo = sum(metres(pts[k], pts[k + 1]) for k in range(len(pts) - 1))
+        scale = e.length / geo if e.length and geo else 1.0
         parts = []                               # (point, leaf of the part ending at point)
         for i in range(len(pts) - 1):
             p, q = pts[i], pts[i + 1]
@@ -251,7 +255,7 @@ def clip(edges, leaves):
                     pa, pb = parcels[id(cur)], parcels[id(leaf)]
                     used.add((id(cur), c))
                     used.add((id(leaf), c))
-                    _emit(pa, piece, e.road, (start_border, True))
+                    _emit(pa, piece, e.road, (start_border, True), e, scale)
                     pa.borders[c], pb.borders[c] = pb, pa
                     cur, piece, start_border = leaf, [c], True
                 else:
@@ -259,7 +263,7 @@ def clip(edges, leaves):
             if at_vertex and piece[-1] != q:
                 piece.append(q)
         if cur is not None and piece and len(piece) >= 2:
-            _emit(parcels[id(cur)], piece, e.road, (start_border, False))
+            _emit(parcels[id(cur)], piece, e.road, (start_border, False), e, scale)
     # a border pair needs a piece ending at the point on both sides (a side may have been dropped)
     ends = {id(pc): {p for piece in pc.pieces for p in (piece.points[0], piece.points[-1])}
             for pc in parcels.values()}
@@ -280,9 +284,28 @@ def _adjacent(a, b):
     return (touch_x and overlap_y) or (touch_y and overlap_x)
 
 
-def _emit(parcel, pts, road, border):
-    length = sum(metres(pts[k], pts[k + 1]) for k in range(len(pts) - 1))
-    parcel.pieces.append(Piece(pts, road, max(1, round(length)), border))
+def edge_headings(e):
+    """Headings at the edge's start and end node (+14 / +15): from its own first and last line
+    segment, or carried over from level 0 (levels.join)."""
+    pts = e.points()
+    return (e.h0 if e.h0 is not None else heading(pts[0], pts[1]),
+            e.h1 if e.h1 is not None else heading(pts[-1], pts[-2]))
+
+
+def piece_headings(pc):
+    pts = pc.points
+    return (pc.h0 if pc.h0 is not None else heading(pts[0], pts[1]),
+            pc.h1 if pc.h1 is not None else heading(pts[-1], pts[-2]))
+
+
+def _emit(parcel, pts, road, border, e, scale):
+    """A piece of edge e; a piece starting / ending at e's node keeps e's heading there, and its
+    length is its share of e's length (upper levels: the level 0 length, not the simplified one)."""
+    length = sum(metres(pts[k], pts[k + 1]) for k in range(len(pts) - 1)) * scale
+    h0, h1 = edge_headings(e)
+    parcel.pieces.append(Piece(pts, road, max(1, round(length)), border,
+                               h0=h0 if pts[0] == e.a and not border[0] else None,
+                               h1=h1 if pts[-1] == e.b and not border[1] else None))
 
 
 def segment_defaults(road):
@@ -420,8 +443,8 @@ def build_level0(parcel, ctx):
         r4 += struct.pack(">HHHHHBBHBBBBHHHHHHH",
                           node_off[pts[0]], node_off[pts[-1]], shape_pos,
                           ring[(i, 0)], ring[(i, 2)],
-                          (rd.paved << 7) | speed, (b6 << 6) | (rd.oneway << 4) | rd.fow,
-                          min(pc.length, 0xFFFF), heading(pts[0], pts[1]), heading(pts[-1], pts[-2]),
+                          (rd.paved << 7) | speed, (rd.toll << 6) | (rd.oneway << 4) | rd.fow,
+                          min(pc.length, 0xFFFF), *piece_headings(pc),
                           (b7 << 7) | (rd.kind << 4) | rd.cls, b17,
                           turn_pos, o12, 0, 0,
                           street_rec[(rd.name, ctx.district_of(rd)) + tuple(ctx.city_of(rd))], w28, o11)

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from . import parcelfmt
 from .carindb import POINT_STEP
 from .osmnet import Edge
-from .parcelbuild import Box, heading, node_type, segment_defaults, sorted_pieces, _shared_mid
+from .parcelbuild import Box, edge_headings, heading, node_type, piece_headings, segment_defaults, sorted_pieces, _shared_mid
 
 CLASSES = {1: 2, 2: 1, 3: 0}
 KIND = {0: 0, 1: 3, 2: 2, 3: 1}         # unit kind (word +4) of the parcels of each level
@@ -19,7 +19,7 @@ INFINITE = 0x20C49B                     # header 0x60-0x68 above level 0
 
 
 def same_road(a, b):
-    return (a.cls, a.fow, a.figure, a.access, a.kind, a.paved) == (b.cls, b.fow, b.figure, b.access, b.kind, b.paved)
+    return (a.cls, a.fow, a.figure, a.access, a.kind, a.paved, a.toll) == (b.cls, b.fow, b.figure, b.access, b.kind, b.paved, b.toll)
 
 
 def kept_nodes(edges, cls_max):
@@ -59,8 +59,11 @@ def join(edges, cls_max, keep, inc, tol=0, nodes=(), top=None, level=None):
                 e = edges[j]
                 seq = e.points() if e.a == cur else e.points()[::-1]
                 fwd = e.a == cur
+                eh = edge_headings(e) if fwd else edge_headings(e)[::-1]
                 if forward is None:
                     forward = fwd
+                    h0 = eh[0]                   # the router finds a level's segment by heading
+                h1 = eh[1]
                 pts += seq[1:]
                 length += e.length
                 cur = seq[-1]
@@ -80,12 +83,13 @@ def join(edges, cls_max, keep, inc, tol=0, nodes=(), top=None, level=None):
                     if top is not None:
                         top[pts[k]] = max(top.get(pts[k], 0), level)
                     share = length * k / (len(pts) - 1)
-                    for part, ln in ((pts[:k + 1], round(share)), (pts[k:], length - round(share))):
+                    heads = ((h0, heading(pts[k], pts[k - 1])), (heading(pts[k], pts[k + 1]), h1))
+                    for (part, ln), (a0, a1) in zip(((pts[:k + 1], round(share)), (pts[k:], length - round(share))), heads):
                         part = simplify(part, tol) if tol else part
-                        out.append(Edge(part[0], part[-1], part[1:-1], r, max(1, ln)))
+                        out.append(Edge(part[0], part[-1], part[1:-1], r, max(1, ln), a0, a1))
                     continue
             pts = simplify(pts, tol) if tol else pts
-            out.append(Edge(pts[0], pts[-1], pts[1:-1], r, length))
+            out.append(Edge(pts[0], pts[-1], pts[1:-1], r, length, h0, h1))
     return out
 
 
@@ -235,8 +239,8 @@ def build_upper(parcel, level, ctx):
         pts = pc.points
         r4 += struct.pack(">HHHHHBBHBBBBHHHH", node_off[pts[0]], node_off[pts[-1]], shape_pos,
                           ring[(i, 0)], ring[(i, 2)], (rd.paved << 7) | speed,
-                          (b6 << 6) | (rd.oneway << 4) | rd.fow, min(pc.length, 0xFFFF),
-                          heading(pts[0], pts[1]), heading(pts[-1], pts[-2]),
+                          (rd.toll << 6) | (rd.oneway << 4) | rd.fow, min(pc.length, 0xFFFF),
+                          *piece_headings(pc),
                           (b7 << 7) | (rd.kind << 4) | rd.cls, b17, o10, o10, o10, 0)
         for q in pts[1:-1]:
             r7 += struct.pack(">HHBB", (q[0] - box.x) // POINT_STEP, (q[1] - box.y) // POINT_STEP, 0, 0)
