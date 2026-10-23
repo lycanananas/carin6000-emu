@@ -17,7 +17,9 @@ import sys
 import time
 from pathlib import Path
 
-from libs import dbwrite, levels, osmaddr, osmnet, osmplaces, parcelbuild, parcelfmt, spindex
+import struct
+
+from libs import dbwrite, levels, osmaddr, osmnet, osmplaces, parcelbuild, parcelfmt, search, spindex
 from libs.osmnet import gps
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +30,7 @@ AREAS = {
 }
 TABLES = {0: 1, 1: 0x1E, 2: 3, 3: 2}         # routing level -> table id
 GRIDS = {0: 512, 1: 32, 2: 32, 3: 8}         # spatial index grid N per level (as the original)
+BACKGROUND = {6: 32, 0x16: 32, 0x15: 32, 0x1C: 1, 0x14: 1, 0x1D: 1}     # table: index grid N
 # the router's default speeds in m/s (rpmod data 0x18ca): form of way 0 (motorway), 3, others; by class
 SPEEDS = {0: (36, 36, 36, 36, 7.5, 4.5, 3), 3: (28, 28, 16.5, 12, 7.5, 4.5, 3),
           -1: (24, 24, 16.5, 12, 7.5, 4.5, 3)}
@@ -91,7 +94,7 @@ def travel_times(edges, top, parcels):
 
 def main():
     p = argparse.ArgumentParser(prog="encoder.py", description=__doc__.split("\n")[0])
-    p.add_argument("-a", "--area", choices=AREAS, default="piaseczno")
+    p.add_argument("-a", "--area", choices=AREAS, default="warszawa")
     p.add_argument("-b", "--bbox", metavar="LON0,LAT0,LON1,LAT1")
     p.add_argument("--osm", type=Path, default=ROOT / "temp/osm/mazowieckie.gpkg",
                    help="GeoPackage from ogr2ogr (default: temp/osm/mazowieckie.gpkg)")
@@ -132,12 +135,13 @@ def main():
     # routing levels 1-3
     top, keep_by, inc_by = levels.tops(net.edges)
     for k in (1, 2, 3):
-        edges = levels.join(net.edges, levels.CLASSES[k], keep_by[k], inc_by[k])
+        edges = levels.join(net.edges, levels.CLASSES[k], keep_by[k], inc_by[k], levels.TOLERANCE[k],
+                            net.nodes, top, k)
         lower = by_level[k - 1]
         if not edges or not lower:
             by_level[k] = []
             continue
-        by_level[k] = parcelbuild.clip(edges, levels.upper_tiles(lower, edges))
+        by_level[k] = parcelbuild.clip(edges, levels.upper_tiles(lower, edges, k))
         for child in lower:
             child.parent = next((pc for pc in by_level[k] if levels._inside(child.box, pc.box)), None)
             if child.parent:
@@ -171,6 +175,79 @@ def main():
             hn_units.append(dbwrite.Unit(("hn", n), lambda resolve, pc=pc, n=n: osmaddr.unit(
                 resolve(keys[id(pc)]), resolve(("hn", n)), parcelbuild.sorted_pieces(pc))))
     db.add(dbwrite.Table("hn", hn_units))
+
+    # search: cities and streets (positions = middle of their segments)
+    for pc in by_level[0]:                  # lays the parcels out (segment offsets for table f)
+        parcelbuild.build_level0(pc, ctx)
+    sums = {}
+    for pc in by_level[0]:
+        for piece in pc.pieces:
+            rd = piece.road
+            mid = piece.points[len(piece.points) // 2]
+            for key in ((rd.settlement or rd.city, rd.city), (rd.city, None)):
+                s_ = sums.setdefault(key, [0, 0, 0])
+                s_[0] += mid[0]
+                s_[1] += mid[1]
+                s_[2] += 1
+
+    def settlement_pos(name, city):
+        s_ = sums.get((name, city)) or sums.get((name, None)) or sums.get((name, name))
+        return (s_[0] // s_[2], s_[1] // s_[2]) if s_ else (0, 0)
+
+    cities = search.collect(by_level[0], parcelbuild.sorted_pieces, settlement_pos)
+    for c in cities:                        # destination segment: the city's segment nearest its middle
+        best = None
+        for _, _, _, items in c.entries:
+            for it in items:
+                pc = it.parcel
+                piece = parcelbuild.sorted_pieces(pc)[it.seg_index]
+                p0 = piece.points[0]
+                dist = abs(p0[0] - c.pos[0]) * 0.62 + abs(p0[1] - c.pos[1])
+                if best is None or dist < best[0]:
+                    best = (dist, (pc, it.seg_index))
+        c.seg = best[1] if best else None
+    cities = [c for c in cities if c.seg]
+    with open(args.template, "rb") as t:
+        t.seek(4 * 2048)
+        b4 = t.read(2048)
+    off, count = struct.unpack_from(">HH", b4, 8)
+    template_country = next(b4[r:r + 56] for i in range(count)
+                            for n, _, _, r in [struct.unpack_from(">HHHH", b4, off + 8 * i)]
+                            if b4[r + 46:r + 48] == b"pl")
+    search.add_tables(db, cities, ("polska", 171, "pl"), template_country, dbwrite.Unit, dbwrite.Table,
+                      lambda pc: db.resolve(keys[id(pc)]))
+    print(f"search: {len(cities)} cities, {sum(len(c.entries) for c in cities)} street entries")
+
+    # background (6 levels) and TMC: copied from the original for now, their own pointers moved
+    for tid, grid in BACKGROUND.items():
+        raw, ckeys = dbwrite.copied_table(args.template, tid)
+        units = [dbwrite.Unit(ckeys[old], lambda resolve, data=data, key=ckeys[old]:
+                              dbwrite.relocate(data, resolve(key), [], resolve)) for old, data in raw]
+        index = spindex.IndexPart(grid, [(*struct.unpack_from(">4i", data, 0x20), ckeys[old]) for old, data in raw])
+        db.add(dbwrite.Table(tid, units, index))
+    raw18, k18 = dbwrite.copied_table(args.template, 0x18)
+    units18 = []
+    for old, data in raw18:
+        links = [(o, k18.get(struct.unpack_from(">I", data, o)[0])) for o in (0x0C, 0x10)]
+        units18.append(dbwrite.Unit(k18[old], lambda resolve, data=data, key=k18[old], links=links:
+                                    dbwrite.relocate(data, resolve(key), links, resolve)))
+    db.add(dbwrite.Table(0x18, units18))
+    raw0, k0 = dbwrite.copied_table(args.template, 0x00)
+    old0, data0 = raw0[0]
+    links0 = [(0x10 + 8 * i, k18.get(struct.unpack_from(">I", data0, 0x10 + 8 * i)[0]))
+              for i in range(struct.unpack_from(">H", data0, 10)[0])]
+    db.add(dbwrite.Table(0x00, [dbwrite.Unit(k0[old0], lambda resolve: dbwrite.relocate(
+        data0, resolve(k0[old0]), links0, resolve))]))
+
+    # POI: one empty unit (kind 6) over the area, so table 7 and its index exist
+    root = parcelbuild.aligned_root(gbox)
+    poi_box = (root.x, root.y, root.x + root.size, root.y + root.size)
+
+    def poi_unit(resolve):
+        d = bytearray(2048)
+        struct.pack_into(">IHHHHHH4i", d, 0, resolve(("poi", 0)), 6, 0, 0x20, 0, 0, 0, *poi_box)
+        return bytes(d)
+    db.add(dbwrite.Table(7, [dbwrite.Unit(("poi", 0), poi_unit)], spindex.IndexPart(256, [(*poi_box, ("poi", 0))])))
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     blocks = db.write(args.output, gbox)

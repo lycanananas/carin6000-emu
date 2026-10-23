@@ -43,18 +43,22 @@ class Box:
         return p[0] in (self.x, self.x + self.size) or p[1] in (self.y, self.y + self.size)
 
 
+def aligned_root(bbox_gps):
+    """The smallest grid-aligned square box holding the area."""
+    size = MIN_SIZE
+    while True:
+        ax = ORIGIN[0] + ((bbox_gps[0] - ORIGIN[0]) // size) * size
+        ay = ORIGIN[1] + ((bbox_gps[1] - ORIGIN[1]) // size) * size
+        if ax + size >= bbox_gps[2] and ay + size >= bbox_gps[3]:
+            return Box(ax, ay, size)
+        size *= 2
+
+
 def tile(edges, bbox_gps):
     """Leaf boxes covering the edges: start from the smallest aligned box holding the area and
     split while the estimated parcel size exceeds MAX_BYTES."""
-    x0 = ORIGIN[0] + ((bbox_gps[0] - ORIGIN[0]) // MIN_SIZE) * MIN_SIZE
-    y0 = ORIGIN[1] + ((bbox_gps[1] - ORIGIN[1]) // MIN_SIZE) * MIN_SIZE
-    size = MIN_SIZE
-    while True:
-        ax = ORIGIN[0] + ((x0 - ORIGIN[0]) // size) * size
-        ay = ORIGIN[1] + ((y0 - ORIGIN[1]) // size) * size
-        if ax + size >= bbox_gps[2] and ay + size >= bbox_gps[3]:
-            break
-        size *= 2
+    root = aligned_root(bbox_gps)
+    ax, ay, size = root.x, root.y, root.size
     load = [(e.points(), 48 + 6 * len(e.shape) + 2 * len(e.road.name or "")) for e in edges]
 
     def split(box, items):
@@ -164,51 +168,106 @@ def nudge_edges(edges, leaves):
 
 
 def clip(edges, leaves):
-    """Parcels with the edge pieces inside them; crossing points become edge point pairs."""
+    """Parcels with the edge pieces inside them. Every line segment is split where it crosses a
+    parcel border line, each part goes to the parcel holding its middle, and where the parcel
+    changes the crossing point becomes an edge point pair (on the grid, unique per parcel)."""
+    import bisect
     grid = Grid(leaves)
     parcels = {id(b): Parcel(b) for b in leaves}
-    used = {}                                   # (parcel, border point) taken
+    xs = sorted({v for b in leaves for v in (b.x, b.x + b.size)})
+    ys = sorted({v for b in leaves for v in (b.y, b.y + b.size)})
+    used = set()
+    vertices = {p for e in edges for p in e.points()}    # a cut point must not merge with a vertex
 
-    def free(par, pt, axis_step):
-        # two edges must not share an edge point: move along the border
+    def crossings(p, q):
+        ts = set()
+        for lines, i in ((xs, 0), (ys, 1)):
+            lo, hi = sorted((p[i], q[i]))
+            for v in lines[bisect.bisect_right(lines, lo):bisect.bisect_left(lines, hi)]:
+                ts.add((v - p[i]) / (q[i] - p[i]))
+        return sorted(t for t in ts if 0 < t < 1)
+
+    def leaf_at(p, q):
+        return grid.leaf(((p[0] + q[0]) / 2, (p[1] + q[1]) / 2))
+
+    def cut_point(p, q, t, a, b):
+        x, y = p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])
+        # on the border line shared by a and b: snap the other coordinate to the grid inside both
+        if a.x + a.size == b.x or b.x + b.size == a.x:
+            bx = b.x if a.x + a.size == b.x else a.x
+            lo, hi = max(a.y, b.y) + POINT_STEP, min(a.y + a.size, b.y + b.size) - POINT_STEP
+            pt, axis = [bx, min(max(round(y / POINT_STEP) * POINT_STEP, lo), hi)], 1
+        else:
+            by = b.y if a.y + a.size == b.y else a.y
+            lo, hi = max(a.x, b.x) + POINT_STEP, min(a.x + a.size, b.x + b.size) - POINT_STEP
+            pt, axis = [min(max(round(x / POINT_STEP) * POINT_STEP, lo), hi), by], 0
         k = 0
-        while (id(par), pt) in used:
+        while (id(a), tuple(pt)) in used or (id(b), tuple(pt)) in used or tuple(pt) in vertices:
             k += 1
-            pt = (pt[0], pt[1] + POINT_STEP * k * (-1) ** k) if axis_step[0] else \
-                 (pt[0] + POINT_STEP * k * (-1) ** k, pt[1])
-        return pt
-
-    def inside(p):
-        leaf = grid.leaf(p)
-        return _nudge(p, leaf) if leaf and leaf.on_border(p) else p
+            pt[axis] += POINT_STEP * k * (-1) ** k
+            if not lo <= pt[axis] <= hi:
+                return None
+        return tuple(pt)
 
     for e in edges:
-        pts = [inside(p) for p in e.points()]
-        cur = grid.leaf(pts[0])
-        if cur is None:
-            continue
+        pts = e.points()
+        parts = []                               # (point, leaf of the part ending at point)
+        for i in range(len(pts) - 1):
+            p, q = pts[i], pts[i + 1]
+            ts = [0.0] + crossings(p, q) + [1.0]
+            for k in range(len(ts) - 1):
+                a = (p[0] + ts[k] * (q[0] - p[0]), p[1] + ts[k] * (q[1] - p[1]))
+                b = (p[0] + ts[k + 1] * (q[0] - p[0]), p[1] + ts[k + 1] * (q[1] - p[1]))
+                parts.append((p, q, ts[k + 1], leaf_at(a, b), k + 1 == len(ts) - 1))
+        cur = parts[0][3] if parts else None
         piece, start_border = [pts[0]], False
-        i = 1
-        while i < len(pts):
-            q = pts[i]
-            if cur.contains(q) and not cur.on_border(q):
-                piece.append(q)
-                i += 1
+        for n, (p, q, t, leaf, at_vertex) in enumerate(parts):
+            if leaf is None:
+                cur, piece = None, None
                 continue
-            ex, step = _exit(piece[-1], q, cur)
-            nxt = grid.leaf((ex[0] + step[0], ex[1] + step[1]))
-            if nxt is None:                     # leaves the tiled area: stop here
-                break
-            pa, pb = parcels[id(cur)], parcels[id(nxt)]
-            ex = free(pa, ex, step)
-            used[(id(pa), ex)] = used[(id(pb), ex)] = True
-            piece.append(ex)
-            _emit(pa, piece, e.road, (start_border, True))
-            pa.borders[ex], pb.borders[ex] = pb, pa
-            cur, piece, start_border = nxt, [ex], True
-        if len(piece) >= 2:
+            if cur is None:                      # coming back into the tiled area: start over
+                cur, piece, start_border = leaf, [q if at_vertex else p], False
+                continue
+            if leaf is not cur:
+                # the previous part ended on a border between cur and leaf
+                pp, pq, pt_t = parts[n - 1][0], parts[n - 1][1], parts[n - 1][2]
+                c = cut_point(pp, pq, pt_t, cur, leaf) if _adjacent(cur, leaf) else None
+                if c is None:                    # corner or no shared border: drop this piece
+                    cur, piece, start_border = leaf, [q if at_vertex else p], False
+                    continue
+                if piece[-1] != c:
+                    piece.append(c)
+                if len(piece) >= 2:
+                    pa, pb = parcels[id(cur)], parcels[id(leaf)]
+                    used.add((id(cur), c))
+                    used.add((id(leaf), c))
+                    _emit(pa, piece, e.road, (start_border, True))
+                    pa.borders[c], pb.borders[c] = pb, pa
+                    cur, piece, start_border = leaf, [c], True
+                else:
+                    cur, piece, start_border = leaf, [c], False
+            if at_vertex and piece[-1] != q:
+                piece.append(q)
+        if cur is not None and piece and len(piece) >= 2:
             _emit(parcels[id(cur)], piece, e.road, (start_border, False))
+    # a border pair needs a piece ending at the point on both sides (a side may have been dropped)
+    ends = {id(pc): {p for piece in pc.pieces for p in (piece.points[0], piece.points[-1])}
+            for pc in parcels.values()}
+    for pc in parcels.values():
+        for pt, nb in list(pc.borders.items()):
+            if pt not in ends[id(pc)] or pt not in ends[id(nb)]:
+                pc.borders.pop(pt, None)
+                nb.borders.pop(pt, None)
     return [p for p in parcels.values() if p.pieces]
+
+
+def _adjacent(a, b):
+    """Boxes sharing a border segment (not only a corner)."""
+    touch_x = a.x + a.size == b.x or b.x + b.size == a.x
+    touch_y = a.y + a.size == b.y or b.y + b.size == a.y
+    overlap_y = min(a.y + a.size, b.y + b.size) > max(a.y, b.y)
+    overlap_x = min(a.x + a.size, b.x + b.size) > max(a.x, b.x)
+    return (touch_x and overlap_y) or (touch_y and overlap_x)
 
 
 def _emit(parcel, pts, road, border):
@@ -307,6 +366,7 @@ def build_level0(parcel, ctx):
     node_off.update({pt: o6 + 16 * k for k, pt in enumerate(edge_pts)})
     parcel.offsets = node_off
     seg_off = [o4 + SEG * i for i in range(len(pieces))]
+    parcel.seg_base = o4
     city_rec = {c: o1 + 10 * (k + 1) for k, c in enumerate(city_list)}
     street_rec = {st: o2 + 10 * (k + 1) for k, st in enumerate(street_list)}
 

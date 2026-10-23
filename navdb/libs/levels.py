@@ -41,8 +41,10 @@ def kept_nodes(edges, cls_max):
     return keep, inc
 
 
-def join(edges, cls_max, keep, inc):
-    """Edges of the level: chains of level 0 edges between kept nodes (shape = all points)."""
+def join(edges, cls_max, keep, inc, tol=0, nodes=(), top=None, level=None):
+    """Edges of the level: chains of level 0 edges between kept nodes (shape = all points). A
+    chain that comes back to its start is cut at the level 0 node nearest its middle, which then
+    exists on this level (top[] is raised)."""
     used = set()
     out = []
     for start in keep:
@@ -71,8 +73,50 @@ def join(edges, cls_max, keep, inc):
             r = road
             if r.oneway in (1, 2) and not forward:
                 r = _flip(r)
+            if pts[0] == pts[-1]:
+                inner = [k for k in range(1, len(pts) - 1) if pts[k] in nodes]
+                if inner:
+                    k = min(inner, key=lambda k: abs(k - len(pts) // 2))
+                    if top is not None:
+                        top[pts[k]] = max(top.get(pts[k], 0), level)
+                    share = length * k / (len(pts) - 1)
+                    for part, ln in ((pts[:k + 1], round(share)), (pts[k:], length - round(share))):
+                        part = simplify(part, tol) if tol else part
+                        out.append(Edge(part[0], part[-1], part[1:-1], r, max(1, ln)))
+                    continue
+            pts = simplify(pts, tol) if tol else pts
             out.append(Edge(pts[0], pts[-1], pts[1:-1], r, length))
     return out
+
+
+TOLERANCE = {1: 5, 2: 15, 3: 40}     # metres: shape simplification per level (nodes and lengths stay)
+
+
+def simplify(pts, tol):
+    """Douglas-Peucker on GPS-unit points (tolerance in metres, local scale)."""
+    if len(pts) < 3:
+        return pts
+    t = tol / 1.8e-7 / 111320
+    keep = [False] * len(pts)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(pts) - 1)]
+    while stack:
+        i, j = stack.pop()
+        ax, ay = pts[i][0] * 0.62, pts[i][1]
+        bx, by = pts[j][0] * 0.62, pts[j][1]
+        dx, dy = bx - ax, by - ay
+        ll = dx * dx + dy * dy or 1
+        best, k_best = -1, None
+        for k in range(i + 1, j):
+            px, py = pts[k][0] * 0.62, pts[k][1]
+            u = max(0, min(1, ((px - ax) * dx + (py - ay) * dy) / ll))
+            dist = ((px - ax - u * dx) ** 2 + (py - ay - u * dy) ** 2) ** 0.5
+            if dist > best:
+                best, k_best = dist, k
+        if k_best is not None and best > t:
+            keep[k_best] = True
+            stack += [(i, k_best), (k_best, j)]
+    return [p for p, k in zip(pts, keep) if k]
 
 
 def _flip(road):
@@ -101,7 +145,10 @@ def tops(edges):
 MAX_UPPER = 1 << 21                     # parcel side on levels 1-3 in the original; points are u16 steps of 64
 
 
-def upper_tiles(lower, edges):
+MIN_UPPER = {1: 1 << 18, 2: 1 << 18, 3: 1 << 20}   # 1/64 of the index cell of tables 1e, 3 (N 32), 2 (N 8)
+
+
+def upper_tiles(lower, edges, level):
     """Leaf boxes of a level: quadtree ancestors of the lower level's parcels (each child lies in
     one parent), at most MAX_UPPER wide and split while too big. The child grid (slot 8) names the
     child at each cell centre, so children may be smaller than a cell (as in the original)."""
@@ -120,7 +167,7 @@ def upper_tiles(lower, edges):
         largest = max(c.box.size for c in kids)
         items = [x for x in load if _touches(box, x[0])]
         too_big = sum(c for _, c in items) > MAX_BYTES or box.size > MAX_UPPER
-        if too_big and box.size // 2 >= largest:
+        if too_big and box.size // 2 >= max(largest, MIN_UPPER[level]):
             h = box.size // 2
             return [leaf for dx in (0, h) for dy in (0, h) for leaf in split(Box(box.x + dx, box.y + dy, h))]
         return [box]

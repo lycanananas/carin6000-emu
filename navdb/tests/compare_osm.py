@@ -11,7 +11,7 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from libs import osmnet
+from libs import osmnet, osmplaces
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -23,7 +23,7 @@ def main():
     want_len, want_n = Counter(), Counter()
     for e in net.edges:
         r = e.road
-        key = (r.cls, r.fow, r.oneway, r.name)
+        key = (r.cls, r.fow, r.oneway, osmplaces.street_name(r.name) or r.ref)   # names as the encoder writes them
         want_len[key] += e.length
     db = sqlite3.connect(gpkg)
     got_len = Counter()

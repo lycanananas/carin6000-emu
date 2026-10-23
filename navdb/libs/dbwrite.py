@@ -37,6 +37,9 @@ class Database:
             self.template_dir = table_directory(f)
         self.tables = {}
         self.ptr = {}
+        self.blocks = {}                # block number 1-4 -> build(resolve), replaces the template
+        self.country_roots = None       # number of root nodes of the country trie (block 3)
+        self.country_numbers = None     # countries kept in block 2's per-country slot (None = all)
 
     def add(self, table):
         self.tables[table.tid] = table
@@ -74,6 +77,9 @@ class Database:
         h = bytearray(self.template[0])
         for o in (0x34, 0x50):
             struct.pack_into(">4I", h, o, *bbox)
+        if self.country_roots is not None:      # (block 3 pointer, offset, count) at 0x0c and 0x44
+            for o in (0x0C, 0x44):
+                struct.pack_into(">IHH", h, o, 3 << 8 | 1, 0x0C, self.country_roots)
         rt_off, rt_n = struct.unpack_from(">HH", h, 0x28)
         o = (rt_off + 4 * rt_n + 15) & ~15
         while o + 16 <= BLOCK:
@@ -105,16 +111,30 @@ class Database:
                 if tid in self.where and self.where[tid][0]:
                     new = (self.where[tid][0] << 8) | self.tables[tid].index.unit_blocks()[0]
                 struct.pack_into(">I", d, o, new)
+        # slot 1 (22 bytes after the descriptors): starts with the pointer of TMC table 0
+        w = lambda o: struct.unpack_from(">H", d, o)[0]
+        s1, s2, n2 = w(12), w(16), w(18)
+        old0 = self.template_dir[0][1]
+        if struct.unpack_from(">I", d, s1)[0] == (old0[0] << 8 | old0[1]) and 0 in self.tables:
+            struct.pack_into(">I", d, s1, self.ptr[self.tables[0].units[0].key])
+        # slot 2: 22-byte settings per country, by country number
+        if self.country_numbers is not None:
+            keep = [bytes(d[s2 + 22 * i:s2 + 22 * i + 22]) for i in range(n2)
+                    if w(s2 + 22 * i) in self.country_numbers]
+            for i, rec in enumerate(keep):
+                d[s2 + 22 * i:s2 + 22 * i + 22] = rec
+            struct.pack_into(">H", d, 18, len(keep))
         return bytes(d)
 
     def write(self, path, bbox):
         self.layout()
         with open(path, "wb") as f:
             f.write(self.header(bbox))
-            f.write(self.template[1])
-            f.write(self.index_directory())
-            f.write(self.template[3])
-            f.write(self.template[4])
+            for n in (1, 2, 3, 4):
+                if n in self.blocks:
+                    f.write(self.blocks[n](self.resolve))
+                else:
+                    f.write(self.index_directory() if n == 2 else self.template[n])
             for tid in FILE_ORDER:
                 t = self.tables.get(tid)
                 if t is None or not t.units:
@@ -128,3 +148,25 @@ class Database:
                         raise ValueError(f"unit {u.key} changed size")
                     f.write(data)
         return self.total
+
+
+def copied_table(template, tid, grid=None, box_at=0x20):
+    """A table copied unit by unit from the original (background, TMC): each unit gets its new
+    pointer at +0; pointers between units of the table are moved too (TMC next / previous at
+    +0x0c / +0x10, table 0's list of table 18 units). Returns (Table, {old pointer: key})."""
+    from .carindb import read_unit, units
+    with open(template, "rb") as f:
+        tdir = table_directory(f)
+        (_, _), (data, _), (end, _) = tdir[tid]
+        raw = [((b << 8) | n, read_unit(f, (b << 8) | n)) for b, n, _ in units(f, data, end)]
+    keys = {old: ("copy", tid, k) for k, (old, _) in enumerate(raw)}
+    return raw, keys
+
+
+def relocate(data, own, links, resolve):
+    """data with +0 = own pointer and the u32 at each offset in links mapped through resolve."""
+    d = bytearray(data)
+    struct.pack_into(">I", d, 0, own)
+    for o, key in links:
+        struct.pack_into(">I", d, o, resolve(key) if key else 0)
+    return bytes(d)

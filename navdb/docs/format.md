@@ -40,6 +40,7 @@ pattern in the data only.
 |---|---|---|
 | 0x02 | 0x0001 | low byte: CD number (**confirmed** pbp) |
 | 0x08 | 0x0060 | offset of a section at 0x60 (seen) |
+| 0x0c, 0x44 | u32 0x301, u16 0x0c, u16 count | **root of the country trie** (table c, block 3): offset and number of root nodes (9 on the original: b c e h l m p r s). **Confirmed** by the device: with the original count and a one-country trie the Country menu stays empty |
 | 0x1a | 34 | db release (**confirmed** pbp: warns unless 14..21; `FUN_000034c0` returns it to the unpackers) |
 | 0x24 / 0x26 | 0x68 / 31 | offset / count of the table id list (seen) |
 | 0x28 / 0x2a | 0xa6 / 93 | offset / count of the record size table, (u16 type, u16 size) pairs (**confirmed**) |
@@ -125,17 +126,23 @@ first record without a 2^29 extent. The extent is the same for every table: x �
 The zoom unit is not known yet (it looks like a display scale step); `a` is open (it counts down
 towards the coarse end of each family).
 
+Table 4 has two more slots after the directory (descriptors at 0x0c and 0x10): slot 1 (22 bytes)
+starts with the **unit pointer of TMC table 0**, then offsets / counts (open; +8 = a text offset,
+"ceska republika"); slot 2 = **22-byte settings per country**, sorted by country number (u16
+number as in table b +40, then 500, 300, 1000, 0xf401, …, 0xffff; +13 = 1 for cz, sk). An encoder
+keeps only its countries there.
+
 ### Spatial index parts (**checked** on all 11 indexed tables, `libs/spindex.py`)
 
 The blocks from a table's index start `a` up to its data start `b` hold units of kind 8, then kind 9.
 
-- **Kind 8** (always 8 blocks except the last): slot 0 (word 8 offset, word 10 count) = u32 pointers
+- **Kind 8** (always 8 blocks except the last; 4092 cells each; u32 at 0x0c = top cell size): slot 0 (word 8 offset, word 10 count) = u32 pointers
   to kind 9 units, 0 = empty. All kind 8 units of a table together form an **N × N grid** over the
   directory extent; cell i = column i // N (x, west to east), row i mod N (y, south to north). N:
   table 1 512 (cells of 2^20 units ≈ 0.19°), 7 256, 1e/3/6/16/15 32, 2 8, 1c/14/1d 1.
 - **Kind 9** (one leaf per non-empty top cell): slot 0 = n × n u16 offsets (n = 1, 2, 4 … 64, chosen
-  per leaf by data density), subcells in the same column-major order, cell size = leaf / n; word
-  0x10 = subcell size >> 16 for table 1 (0 for n ≥ 32, so derive the size from n). Each offset is
+  per leaf by data density: the smallest n whose subcells each lie inside one data unit), subcells
+  in the same column-major order, **u32 at 0x10 = subcell size**; slot 1 starts 4-aligned. Each offset is
   the **byte position of a u32 unit pointer** in slot 1 of the same unit, 0 = no data (sea, outside
   the map). Slot 1 = the distinct unit pointers.
 - Every subcell points to the data unit (parcel / background unit / POI unit) whose box contains it:
@@ -143,6 +150,8 @@ The blocks from a table's index start `a` up to its data start `b` hold units of
   referenced. A position → unit lookup is thus: top cell → leaf → subcell → pointer.
 - For the encoder: the grid is fixed by the directory extent, so the writer only needs the data unit
   boxes; pick n per leaf so that each subcell lies within one unit (units form a quadtree).
+  `libs/spindex.py` IndexPart rebuilds all 11 original index parts **byte for byte**
+  (`tests/test_spindex.py`).
 
 ## 3. Unit unpacking (pbp, ported in `libs/unpack.py`)
 
@@ -228,7 +237,7 @@ parcels are used in. `libs/parcelfmt.py` reproduces every original parcel byte f
 | 5 | 0x10 (8 B) | **nodes** inside the parcel: x, y, +4 a segment at this node (entry into the +6/+8 ring), +6 **node byte** (below), +7 0 (rarely 1, 2) |
 | 6 | 0x06 (16 B) | **edge points** (x or y = 0 or max): +0 x, +2 y, +4 owning segment, +6 flags (open), +8 u32 **neighbour parcel**, +12 offset of the **same point's edge record there**, +14 0. **Checked**: 10 220 of 10 220 sampled are reciprocal (same coordinates, pointing back) |
 | 7 | 0x0c (6 B) | **shape points**: x, y, u8 flags (0 / 2), u8; a segment's shape points run from its +4 to the next segment's +4 (dbq `FUN_000149ba`), in start → end order. **Checked**: they lie between the end points |
-| 8 | 4 B | levels 1-3 only: **16 × 16 grid of child parcel pointers** (the level below) over this parcel's box, cell = word 0x5c, column-major like the spatial index; 256 entries, repeated where one child covers several cells |
+| 8 | 4 B | levels 1-3 only: **grid of child parcel pointers** (the level below) over this parcel's box: cell = word 0x5c = the size of the smallest child but at least 1/16 of the box, n = box / cell, column-major like the spatial index, each cell = the child holding its centre (0 = none). Count n² (sometimes fewer: trailing empty columns dropped) |
 | 9 | 0x0f (8 B) | **neighbour parcels**: u32 unit pointer, u16 x, u16 y = a point on the shared border in 64-unit steps from this parcel's corner (often its middle); the set equals the edge points' neighbours (**checked**, 407 parcels) |
 | 10 | 0x14 (8 B) | **prohibited turns** (**confirmed**, rpmod `FUN_0000ce00` loads them, `FUN_0000bb24` checks, the successor iterators `FUN_0000b93a` / `FUN_0000b8ae` skip a listed target): u32 parcel of the target (nearly always this one), u16 target segment, u16 flags; a segment's entries run from its +18 to the next segment's +18 (rpmod `FUN_0001d28a`). Bit 0 selects the travel direction on the source: 0 = travelling end → start (via node = start), 1 = start → end (via node = end). The router keeps at most 8 per direction. Bit 1 is read by neither rpmod nor dbq. Entries whose target is not at the via node never match (harmless) |
 | 11 | 0x13 (6 B) | **signposts** (dbq `FUN_00004cfc`, used by guidance, not by the router): text (destination, "krakow"), text (route number, "e77"), u16 direction 0 / 1; a segment's entries run from its +30 to the next segment's +30 (level 0) |
@@ -456,6 +465,24 @@ record** (slot 1). Table 7 POI records point at their name entry (+0 unit, +4 of
 
 Slot 4 = 8-byte access segments: `u32 table 1 parcel pointer, u16 segment offset, u16 side`
 (0 / 1; probably left / right of the segment). Checked: 143 of 147 segments carry the POI's street.
+
+### Street entries in detail (table f; **checked** on Piaseczno)
+
+- Entry `+0 name, +2 flags, +4 settlement text (0 = the whole city), +6 offset of its run`; a gmina
+  has for every street one entry for the whole gmina plus one per settlement, a settlement city
+  one per street. Every name has **word rotations**: "ulica adama mickiewicza" (flags 0x12),
+  "adama mickiewicza ulica" and "mickiewicza ulica adama" (0x1012): the leading street word moves
+  to the cut, no rotation starts with a number.
+- Run (6 B): `u16 offset of the first item, u8 count, u8 1, u16 0`; runs may share items.
+- Item (24 B): `u32 lon, u32 lat` of the settlement / town, **even from / to, odd from / to**
+  (32767 none) over its segments, `u32 parcel, u16 offset of the first segment, u16 number of
+  consecutive segments` (one street of one class in one parcel).
+- Table d holds the gminas (municipality = powiat, "piaseczno" / "powiat piaseczynski") and the
+  settlements (municipality = their gmina, "nowa iwiczna" / "lesznowola"), each with its own street
+  trie. Units of d / f: 0x30-byte header (slots at 8, next / previous unit at 0x28 / 0x2c).
+  Trie units (c, e, 10, 12): 12-byte header (pointer, kind, 0, slot 0 = nodes at 0x0c).
+- `tests/check_search.py` walks country -> city -> street -> items like the device: the original
+  passes 99.9 % / 92 % (other-language names), the encoder output 100 %.
 
 ### Table b: countries (block 4, kind 0x0a; **checked**) and table c (block 3)
 

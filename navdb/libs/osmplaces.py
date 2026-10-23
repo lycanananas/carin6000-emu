@@ -83,11 +83,11 @@ class Area:
 class Places:
     def __init__(self, gpkg, bbox):
         db = sqlite3.connect(gpkg)
-        self.levels = {6: [], 7: [], 8: []}
+        self.levels = {6: [], 7: [], 8: [], 9: []}
         for name, level, geom in db.execute(
                 "SELECT m.name, m.admin_level, m.geom FROM multipolygons m JOIN rtree_multipolygons_geom r "
                 "ON m.fid = r.id WHERE r.maxx >= ? AND r.minx <= ? AND r.maxy >= ? AND r.miny <= ? AND "
-                "m.boundary = 'administrative' AND m.admin_level IN ('6', '7', '8')",
+                "m.boundary = 'administrative' AND m.admin_level IN ('6', '7', '8', '9')",
                 (bbox[0], bbox[2], bbox[1], bbox[3])):
             rings = _polygons(geom)
             if rings and name:
@@ -117,6 +117,8 @@ class Places:
             powiat = self._area(6, pt)
             city = gmina[6:] if gmina and gmina.startswith("gmina ") else gmina
             town = self._area(8, pt)
+            if town == city:                # the gmina's own town: its district if it has any (Warsaw)
+                town = self._area(9, pt) or town
             self.cache[key] = (city or town or "?", powiat or city or "?", town)
         return self.cache[key][:2]
 

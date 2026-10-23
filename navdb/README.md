@@ -59,6 +59,27 @@ Adres (np. Nowy Świat 29) znajdziesz na warstwie `roads` przez „Zaznacz obiek
 
 Nazwy są zapisane małymi literami, bez polskich znaków i z „ulica”/„aleja” w nazwie.
 
+## Enkoder (OSM → carindb, w budowie)
+
+```bash
+ogr2ogr -f GPKG temp/osm/mazowieckie.gpkg temp/osm/mazowieckie-latest.osm.pbf lines points multipolygons   # raz, ~1 min
+python3 navdb/encoder.py --area piaseczno           # -> temp/navdb/enc/carindb (kilka sekund)
+python3 navdb/tests/check_db.py                     # reguły struktury (te same przechodzą na oryginale)
+python3 navdb/tests/check_search.py                 # wyszukiwanie adresów jak w urządzeniu
+python3 navdb/decoder.py temp/navdb/enc/carindb -o temp/navdb/enc/check.gpkg   # podgląd w QGIS
+python3 navdb/tools/mkdisc.py --chd                 # płyta: cd/carin_osm.img/.cue/.chd
+```
+
+Plik PBF pobiera się z Geofabrik (`https://download.geofabrik.de/europe/poland/mazowieckie-latest.osm.pbf`).
+
+Co enkoder robi teraz:
+- **drogi z OSM** na 4 poziomach routingu: klasy, form of way, kierunkowość, ronda, dostęp, kształty, topologia, poziomy z powiązaniami węzłów i czasami dojazdu;
+- **numery domów** z adresów OSM, per odcinek, lewa i prawa strona;
+- **wyszukiwanie**: kraj Polska, gminy i miejscowości, ulice z rotacjami nazw;
+- **tło i TMC** są na razie **skopiowane z oryginalnej płyty**, a POI puste.
+
+Każdy writer jest sprawdzony testem w obie strony na oryginale (`tests/test_parcelfmt.py`, `tests/test_spindex.py`), a wynik walidatorami. Obraz płyty bierze oryginał jako szablon: deskryptory, BIBLIOGR (lista zgodnych wersji oprogramowania) i CARINET zostają, a ABSTRACT i COPYRIGH opisują dane OSM (ODbL).
+
 ## Stan
 
 Struktura całego pliku jest znana (poza TMC, które jest niepotrzebne). Znane są też wszystkie pola, których używa router (`rpmod`): topologia, zakazy skrętu, kierunkowość, dostęp, model prędkości i powiązanie poziomów routingu. Otwarte drobiazgi, których router nie czyta, są wypisane w [docs/format.md](docs/format.md), sekcja 8, razem z planem enkodera.
