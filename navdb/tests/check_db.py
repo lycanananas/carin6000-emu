@@ -2,7 +2,7 @@
 """Checks the structural rules of a carindb (the ones found on the original, docs/format.md) on any
 database, the original or one the encoder wrote. Every rule prints passed / failed counts.
 
-usage: check_db.py [carindb] [--every N]   (default: temp/navdb/warszawa/carindb, every parcel)
+usage: check_db.py [carindb] [--every N]   (default: temp/navdb/poland/carindb, every parcel)
 """
 import argparse
 import struct
@@ -179,7 +179,7 @@ def check_parcel(d, ptr, level, sizes, get, res):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("carindb", nargs="?", type=Path, default=ROOT / "temp/navdb/warszawa/carindb")
+    p.add_argument("carindb", nargs="?", type=Path, default=ROOT / "temp/navdb/poland/carindb")
     p.add_argument("--every", type=int, default=1, help="check every Nth parcel")
     args = p.parse_args()
     f = open(args.carindb, "rb")

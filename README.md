@@ -190,9 +190,9 @@ On real hardware, burn the PoC first and read the benchmark from the title bar. 
 Your own map disc (one country) is made from OSM data, which the encoder downloads from Geofabrik itself:
 
 ```bash
-python3 navdb/encoder.py warszawa             # roads, routing, addresses, POI, background -> cd/carin_warszawa.img/.cue
-python3 navdb/encoder.py polska               # all of Poland (also: serbia, voivodeships)
-tools/carin.py gui --state installed --cd carin_warszawa
+python3 navdb/encoder.py poland               # roads, routing, addresses, POI, background -> cd/carin_poland.img/.cue
+python3 navdb/encoder.py exyugoslavia         # 8 countries (si hr ba me rs xk mk al), one disc
+tools/carin.py gui --state installed --cd carin_poland
 ```
 
 Regions, options, limits and verification: [navdb/README.md](navdb/README.md).

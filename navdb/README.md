@@ -25,29 +25,27 @@ Open the `.gpkg` file in QGIS. The styles load automatically.
 ### B. Make your own map disc from OpenStreetMap
 
 ```bash
-python3 navdb/encoder.py warszawa       # Warsaw (~15 s) -> cd/carin_warszawa.img + .cue
-python3 navdb/encoder.py polska         # all of Poland (~11 min, 10 GB RAM, 558 MB disc)
-python3 navdb/encoder.py serbia         # all of Serbia (~2 min, 3 GB RAM, 138 MB disc)
-python3 navdb/encoder.py beograd        # Belgrade (a quick Serbia test)
+python3 navdb/encoder.py poland         # Poland (~11 min, 10 GB RAM, 553 MB disc) -> cd/carin_poland.img + .cue
+python3 navdb/encoder.py exyugoslavia   # 8 countries of former Yugoslavia + Albania (~11 min, 8.5 GB RAM, 451 MB disc)
 ```
 
-One disc = one country. The encoder downloads the data from Geofabrik itself, converts it with `ogr2ogr` and builds the disc image `cd/carin_REGION.img` + `.cue`.
+One disc = one package of countries. The encoder downloads the data from Geofabrik itself (one extract per country), converts it with `ogr2ogr` and builds the disc image `cd/carin_PACKAGE.img` + `.cue`.
 
 Checking the result:
 
 ```bash
-python3 navdb/tests/check_db.py temp/navdb/warszawa/carindb
-python3 navdb/tests/check_search.py temp/navdb/warszawa/carindb
+python3 navdb/tests/check_db.py temp/navdb/poland/carindb --every 20
+python3 navdb/tests/check_search.py temp/navdb/poland/carindb
 ```
 
-The disc is used like the original map disc: in the unit (burn it with `cd cd && cdrdao write --device /dev/sr0 carin_warszawa.cue`) or in the emulator; both are described in the [main README](../README.md). navdb itself never runs the emulator.
+The disc is used like the original map disc: in the unit (burn it with `cd cd && cdrdao write --device /dev/sr0 carin_poland.cue`) or in the emulator; both are described in the [main README](../README.md). navdb itself never runs the emulator.
 
 ### C. Check what the encoder made
 
 ```bash
-python3 navdb/decoder.py temp/navdb/warszawa/carindb -o temp/navdb/warszawa/check.gpkg   # for QGIS
-python3 navdb/decoder.py temp/navdb/warszawa/carindb --info                              # when and where it was made
-python3 navdb/tests/compare_osm.py temp/navdb/warszawa/check.gpkg 20.85,52.10,21.27,52.37   # road lengths vs OSM
+python3 navdb/decoder.py temp/navdb/poland/carindb --area warszawa -o temp/navdb/poland/check.gpkg   # for QGIS
+python3 navdb/decoder.py temp/navdb/poland/carindb --info                                            # when and where it was made
+python3 navdb/tests/compare_osm.py temp/navdb/poland/check.gpkg 20.85,52.10,21.27,52.37                # road lengths vs OSM
 ```
 
 ## Decoder
@@ -85,24 +83,23 @@ Names are stored in lower case, without diacritics and with "ulica" / "aleja" in
 ## Encoder
 
 ```
-python3 navdb/encoder.py REGION [-t TEMP] [-o DISC.img] [--no-compress] [--detail normal|full]
+python3 navdb/encoder.py PACKAGE [-t TEMP] [-o DISC.img] [--no-compress] [--detail normal|full]
 ```
 
-| Region | What |
+| Package | Countries (Country menu) |
 |---|---|
-| `polska` | all of Poland |
-| `dolnoslaskie` … `zachodniopomorskie` | one of the 16 voivodeships |
-| `warszawa`, `piaseczno` | parts of Mazovia for testing |
-| `serbia` | all of Serbia (without Kosovo, a separate Geofabrik file) |
-| `beograd` | a part of Serbia for testing |
+| `poland` | polska |
+| `exyugoslavia` | slovenija, hrvatska, bosna i hercegovina, crna gora, srbija, kosovo, makedonija, shqiperia |
 
-- `-t TEMP` (default `temp`): the working folder. The downloaded OSM data is in `TEMP/osm` (cache), the database and intermediate files in `TEMP/navdb/REGION/`.
+Each country is a separate entry in the Country menu, with its own cities. A country's area is its OSM border (admin_level 2); roads, POIs and places outside every country of the package are left out. Routing goes across the borders. ExYugoslavia by country (share of the database): si ~51 MB, hr ~67, ba ~61, me ~14, rs ~107, xk ~33, mk ~24, al ~35.
+
+- `-t TEMP` (default `temp`): the working folder. The downloaded OSM data is in `TEMP/osm` (cache), the database and intermediate files in `TEMP/navdb/PACKAGE/`.
 - **OSM cache**: a file older than 7 days — the encoder asks whether to download a fresh one (without a terminal it uses the old one). Older than 30 days — it downloads a new one without asking.
-- `-o` (default `cd/carin_REGION.img`): the disc image, with the `.cue` next to it.
+- `-o` (default `cd/carin_PACKAGE.img`): the disc image, with the `.cue` next to it.
 - `--no-compress`: road parcels without compression (a bigger disc, useful for debugging).
 - `--detail normal` (default) leaves out tracks and unnamed service roads. That is about half of the roads in OSM, and Navteq hardly had them either. `--detail full` takes everything.
 
-What goes into the database (all from OSM and only for the selected area):
+What goes into the database (all from OSM and only for the package's countries):
 
 - **Roads** on 4 routing levels, as in the original: from every street down to only the motorways. Each has a shape, class, form of way (motorway, expressway, ramp, ferry), direction, roundabouts and access restrictions.
 - **Routing topology**: junctions, crossings between parcels, links between levels, travel times to the fast roads.
@@ -122,11 +119,11 @@ TMC (traffic messages over RDS) is empty on purpose, as it is not used.
 
 The map data comes only from OSM. From the original disc the encoder takes only metadata: the record size table, the layout of the header blocks with the zoom ranges, the constant country settings, and for the disc image the ISO structure, BIBLIOGR (the list of compatible software versions) and CARINET.
 
-**Countries.** The original disc has 11 countries (bg, cz, ee, hr, hu, lt, lv, pl, ro, si, sk). The country number is an index into the country table of the software (NAV_SW disc): an alphabetical English list of 240 countries with the car registration codes the menus show (171 = PL, 190 = SK, 81 = D…). Serbia has no code of its own there, so it gets **237 = YU** (Yugoslavia). The country name ("srbija") comes from the disc. The country settings and the language of the names (Croatian) are taken from Croatia. Cyrillic names are transliterated to Latin without diacritics ("Кнеза Милоша" → "kneza milosa", đ → dj). A new country is added in `libs/countries.py` (number, language, OSM admin levels) and its Geofabrik region in `libs/osmsrc.py`.
+**Countries.** The original disc has 11 countries (bg, cz, ee, hr, hu, lt, lv, pl, ro, si, sk). The country number is an index into the country table of the software (NAV_SW disc): an alphabetical English list of 240 countries with the car registration codes the menus show (171 = PL, 190 = SK, 81 = D…). Serbia has no code of its own there, so all ExYugoslavia countries share **237 = YU** (Yugoslavia): separate countries with their own names and cities, one number. The country names come from the disc. The country settings are taken from Croatia (Slovenia from Slovenia; both are identical on the original), the language byte of the names is Slovenian for si, Croatian for hr / ba / me / rs and "none" (0xff, as the original's bg, hu, ro) for xk / mk / al. Whether the firmware ever tells countries apart by number alone is not known: check on the device. Cyrillic names are transliterated to Latin without diacritics ("Кнеза Милоша" → "kneza milosa", đ → dj, Macedonian ѓ / ќ / ѕ → gj / kj / dz); bilingual names ("Koper / Capodistria") keep the first part. A new country is added in `libs/countries.py` (number, language, OSM admin levels, package) and its Geofabrik extract in `libs/osmsrc.py`.
 
 **Compression.** Road parcels (the largest part of the database) are compressed with the same bit code as the original. The compressor is the exact inverse of the unit's decompression; on the original parcels it gives an identical result after decompression and about 2× smaller data. The other units are stored uncompressed, which the format allows.
 
-Sizes (with the diet and compression): Warsaw about 15 MB, Mazovia about 70 MB, all of Poland 558 MB (fits a 74-minute CD-R); the encoder warns if the image is too big. The encoder uses all cores (up to 16). The result does not depend on their number, and `NAVDB_WORKERS=1` turns parallel work off. All of Poland on 20 cores takes about 11 min and 10 GB RAM.
+Sizes (with the diet and compression): Poland 553 MB, ExYugoslavia 451 MB (both fit a 74-minute CD-R); the encoder warns if the image is too big. The encoder uses all cores (up to 16). The result does not depend on their number, and `NAVDB_WORKERS=1` turns parallel work off. All of Poland on 20 cores takes about 11 min and 10 GB RAM.
 
 The OSM data is licensed under the ODbL: © OpenStreetMap contributors. The disc carries this notice in COPYRIGH.
 

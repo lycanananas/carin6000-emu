@@ -49,10 +49,10 @@ def gps(lon, lat):
             round(lat / GPS_UNIT / POINT_STEP) * POINT_STEP)
 
 
-# Serbian Cyrillic -> Latin (Gaj), then folded like the rest; đ as "dj", as the original's
-# Croatian names ("djelo")
-CYRILLIC = dict(zip("абвгдђежзијклљмнњопрстћуфхцчџш",
-                    "a b v g d dj e z z i j k l lj m n nj o p r s t c u f h c c dz s".split()))
+# Serbian Cyrillic -> Latin (Gaj), Macedonian ѓ / ќ / ѕ as gj / kj / dz, then folded like the
+# rest; đ as "dj", as the original's Croatian names ("djelo")
+CYRILLIC = dict(zip("абвгдђежзијклљмнњопрстћуфхцчџшѓќѕѐѝ",
+                    "a b v g d dj e z z i j k l lj m n nj o p r s t c u f h c c dz s gj kj dz e i".split()))
 LATIN = {"đ": "dj", "Đ": "Dj", "ł": "l", "Ł": "L"}
 
 
@@ -108,6 +108,7 @@ class Road:
     city: str = None
     muni: str = None
     settlement: str = None
+    country: str = None  # ISO code (libs/countries.py)
 
 
 @dataclass(slots=True)

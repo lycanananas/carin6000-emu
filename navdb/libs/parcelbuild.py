@@ -347,7 +347,7 @@ def node_type(degree):
 
 
 def build_level0(parcel, ctx):
-    """RawParcel of a level 0 parcel. ctx: country (name, number), city_of(road) -> (city,
+    """RawParcel of a level 0 parcel. ctx: country_of(road) -> (name, number), city_of(road) -> (city,
     municipality), district_of(road) -> text or None, code(point) -> node byte bits 6-7 (3 - top
     level), ptr(parcel) -> unit pointer, hn_ptr(parcel) -> house number unit pointer or 0."""
     from . import parcelfmt
@@ -365,22 +365,24 @@ def build_level0(parcel, ctx):
 
     # places
     strings = Strings()
-    country, number = ctx.country
-    cities = {}
-    streets = {}
+    countries, cities, streets = {}, {}, {}           # a parcel at a border holds two countries
     for pc in pieces:
+        country = ctx.country_of(pc.road)
         city, muni = ctx.city_of(pc.road)
-        cities[(city, muni)] = None
-        streets[(pc.road.name, ctx.district_of(pc.road), city, muni)] = None
-    city_list = sorted(cities, key=lambda c: (c[0] or "", c[1] or ""))
-    street_list = sorted(streets, key=lambda s: (s[0] or "", s[1] or "", s[2] or ""))
-    for t in [country] + [c for cm in city_list for c in cm] + [x for st in street_list for x in st[:2]]:
+        countries[country] = None
+        cities[(city, muni, country)] = None
+        streets[(pc.road.name, ctx.district_of(pc.road), city, muni, country)] = None
+    country_list = sorted(countries) or [ctx.country_of(None)]
+    city_list = sorted(cities, key=lambda c: (c[0] or "", c[1] or "", c[2]))
+    street_list = sorted(streets, key=lambda s: (s[0] or "", s[1] or "", s[2] or "", s[4]))
+    for t in [c[0] for c in country_list] + [c for cm in city_list for c in cm[:2]] + \
+            [x for st in street_list for x in st[:2]]:
         strings.add(t)
 
     # sizes and offsets (memory order 0-7, 9, 8, 10-12, text)
     def a4(n):
         return (n + 3) & ~3
-    n0, n1, n2 = 3, len(city_list) + 2, len(street_list) + 2
+    n0, n1, n2 = len(country_list) + 2, len(city_list) + 2, len(street_list) + 2
     o0 = parcelfmt.HEADER
     o1 = a4(o0 + 10 * n0)
     o2 = a4(o1 + 10 * n1)
@@ -404,17 +406,20 @@ def build_level0(parcel, ctx):
     parcel.offsets = node_off
     seg_off = [o4 + SEG * i for i in range(len(pieces))]
     parcel.seg_base = o4
+    country_rec = {c: o0 + 10 * (k + 1) for k, c in enumerate(country_list)}
     city_rec = {c: o1 + 10 * (k + 1) for k, c in enumerate(city_list)}
     street_rec = {st: o2 + 10 * (k + 1) for k, st in enumerate(street_list)}
 
     def place(off, name, second, parent):
         return struct.pack(">HHHHH", strings[name], second, parent, 0, 0)
 
-    r0 = bytes(10) + struct.pack(">HHHHH", strings[country], number, 0, 0, 0) + bytes(10)
+    r0 = bytes(10) + b"".join(struct.pack(">HHHHH", strings[name], number, 0, 0, 0)
+                              for name, number in country_list) + bytes(10)
     r1 = place(0, None, 0, o0) + b"".join(
-        place(0, c, strings[m], o0 + 10) for c, m in city_list) + place(0, None, 0, o0 + 20)
+        place(0, c, strings[m], country_rec[cn]) for c, m, cn in city_list) + place(0, None, 0, o0 + 10 * (n0 - 1))
     r2 = place(0, None, 0, o1) + b"".join(
-        place(0, s[0], strings[s[1]], city_rec[(s[2], s[3])]) for s in street_list) +         place(0, None, 0, o1 + 10 * (n1 - 1))
+        place(0, s[0], strings[s[1]], city_rec[(s[2], s[3], s[4])]) for s in street_list) + \
+        place(0, None, 0, o1 + 10 * (n1 - 1))
 
     # class index
     r3 = b""
@@ -447,7 +452,7 @@ def build_level0(parcel, ctx):
                           min(pc.length, 0xFFFF), *piece_headings(pc),
                           (b7 << 7) | (rd.kind << 4) | rd.cls, b17,
                           turn_pos, o12, 0, 0,
-                          street_rec[(rd.name, ctx.district_of(rd)) + tuple(ctx.city_of(rd))], w28, o11)
+                          street_rec[(rd.name, ctx.district_of(rd), *ctx.city_of(rd), ctx.country_of(rd))], w28, o11)
         for q in pts[1:-1]:
             r7 += struct.pack(">HHBB", (q[0] - box.x) // POINT_STEP, (q[1] - box.y) // POINT_STEP, 0, 0)
             shape_pos += 6

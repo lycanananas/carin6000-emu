@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
-"""OpenStreetMap -> CARiN / Carminat map disc (one country per disc).
+"""OpenStreetMap -> CARiN / Carminat map disc (a package: one or more countries per disc).
 
 Examples:
-  navdb/encoder.py warszawa          Warsaw -> cd/carin_warszawa.img + .cue
-  navdb/encoder.py polska            all of Poland
-  navdb/encoder.py serbia            all of Serbia
-  navdb/encoder.py beograd -t /tmp/carin    Belgrade, cache and work files in /tmp/carin
+  navdb/encoder.py poland            Poland -> cd/carin_poland.img + .cue
+  navdb/encoder.py exyugoslavia      Slovenia ... Albania (8 countries) -> cd/carin_exyugoslavia.img
+  navdb/encoder.py poland -t /tmp/carin    cache and work files in /tmp/carin
 
-The OSM extract is downloaded from Geofabrik and kept in TEMP/osm (asked to refresh after 7
-days, refreshed after 30); the database is built in TEMP/navdb/REGION/carindb. The original
-carindb (temp/navdb/carindb) and disc are the templates for the metadata. Check the result with
-  navdb/tests/check_db.py temp/navdb/REGION/carindb
-  navdb/tests/check_search.py temp/navdb/REGION/carindb
+The OSM extracts (one per country) are downloaded from Geofabrik and kept in TEMP/osm (asked to
+refresh after 7 days, refreshed after 30); the database is built in TEMP/navdb/PACKAGE/carindb.
+The original carindb (temp/navdb/carindb) and disc are the templates for the metadata. Check the
+result with
+  navdb/tests/check_db.py temp/navdb/PACKAGE/carindb
+  navdb/tests/check_search.py temp/navdb/PACKAGE/carindb
 """
 import argparse
 import builtins
+from collections import Counter
 import heapq
 import resource
 import sys
@@ -46,9 +47,12 @@ SPEEDS = {0: (36, 36, 36, 36, 7.5, 4.5, 3), 3: (28, 28, 16.5, 12, 7.5, 4.5, 3),
 class Context:
     """What the parcel builders ask: places, node codes and unit pointers."""
 
-    def __init__(self, db, keys, top, country):
+    def __init__(self, db, keys, top, countries):
         self.db, self.keys, self.top = db, keys, top
-        self.country = (country.name, country.number)
+        self.countries = {c.iso: (c.name, c.number) for c in countries}
+
+    def country_of(self, road):
+        return self.countries[road.country]
 
     def city_of(self, road):
         return road.city, road.muni
@@ -146,11 +150,11 @@ def main():
     p = argparse.ArgumentParser(prog="encoder.py", formatter_class=argparse.RawDescriptionHelpFormatter,
                                 description=__doc__.split("\n")[0],
                                 epilog="\n".join(__doc__.split("\n")[2:]) + "\nStatus and limits: navdb/README.md.")
-    p.add_argument("region", choices=countries.REGIONS, metavar="REGION",
-                   help="what to encode: " + ", ".join(countries.REGIONS))
+    p.add_argument("package", choices=countries.PACKAGES, metavar="PACKAGE",
+                   help="what to encode: " + ", ".join(f"{k} ({' '.join(v)})" for k, v in countries.PACKAGES.items()))
     p.add_argument("-t", "--temp", type=Path, default=ROOT / "temp",
-                   help="folder for the OSM cache (TEMP/osm) and work files (TEMP/navdb/REGION); default: temp")
-    p.add_argument("-o", "--output", type=Path, help="disc image .img (+ .cue next to it); default: cd/carin_REGION.img")
+                   help="folder for the OSM cache (TEMP/osm) and work files (TEMP/navdb/PACKAGE); default: temp")
+    p.add_argument("-o", "--output", type=Path, help="disc image .img (+ .cue next to it); default: cd/carin_PACKAGE.img")
     p.add_argument("--no-compress", action="store_true", help="store the parcels uncompressed")
     p.add_argument("--detail", choices=("normal", "full"), default="normal",
                    help="normal (default): without tracks and unnamed service roads; full: all OSM roads")
@@ -163,50 +167,63 @@ def main():
     if not args.template_disc.is_file():
         p.error(f"template disc {args.template_disc} not found (the original map disc)")
     t0 = time.monotonic()
-    iso, extract, box = countries.REGIONS[args.region]
-    country = countries.COUNTRIES[iso]
-    search.set_language(country.lang, country.street_prefix)
-    osm = [osmsrc.fetch(extract, args.temp / "osm")]
-    args.source = f"{extract} (geofabrik)"
-    args.name = args.region
-    args.country = country.name
-    bbox = box or osmsrc.extent(osm)
-    work = args.temp / "navdb" / args.region
+    package = [countries.COUNTRIES[iso] for iso in countries.PACKAGES[args.package]]
+    by_iso = {c.iso: c for c in package}
+    extracts = list(dict.fromkeys(c.extract for c in package))
+    osm = [osmsrc.fetch(x, args.temp / "osm") for x in extracts]
+    args.source = ", ".join(extracts) + " (geofabrik)"
+    args.name = args.package
+    args.country = ", ".join(c.name for c in package)
+    atlas = osmplaces.Atlas(osm, package)
+    bbox = atlas.bbox
+    work = args.temp / "navdb" / args.package
     work.mkdir(parents=True, exist_ok=True)
     args.database = work / "carindb"
-    args.output = args.output or ROOT / f"cd/carin_{args.region}.img"
-    print(f"{args.region} ({country.name}): lon {bbox[0]:.3f}..{bbox[2]:.3f}, lat {bbox[1]:.3f}..{bbox[3]:.3f}")
+    args.output = args.output or ROOT / f"cd/carin_{args.package}.img"
+    print(f"{args.package} ({args.country}): lon {bbox[0]:.3f}..{bbox[2]:.3f}, lat {bbox[1]:.3f}..{bbox[3]:.3f}")
 
-    # network and places
+    # network and places: a road (OSM way) belongs to the country at its middle; roads outside
+    # every country of the package are left out
     net = osmnet.load(osm, bbox, args.detail)
-    places = osmplaces.Places(osm, bbox, country)
     roads, mids = {}, []
     for e in net.edges:
         r = e.road
         if id(r) not in roads:
             roads[id(r)] = r
             mids.append(e.points()[len(e.points()) // 2])
-    step = 20000                            # city / settlement of every road, in worker processes
+    step = 20000                            # country, city, settlement of every road, in worker processes
     def where(chunk):                       # city_of caches per cell: a fresh cache per chunk
-        places.cache.clear()                # keeps the result independent of the workers
-        return [(*places.city_of(p), places.settlement_of(p)) for p in chunk]
+        atlas.clear()                       # keeps the result independent of the workers
+        out = []
+        for p in chunk:
+            c = atlas.country_at(p)
+            pl = c and atlas.places[c.iso]
+            out.append((c.iso, *pl.city_of(p), pl.settlement_of(p)) if c else None)
+        return out
     found = [w for part in pmap(where, [mids[i:i + step] for i in range(0, len(mids), step)], 2) for w in part]
-    for r, (city, muni, settlement) in zip(roads.values(), found):
-        r.city, r.muni, r.settlement = city, muni, settlement
-        r.name = osmplaces.street_name(r.name, country) or r.ref
+    for r, w in zip(roads.values(), found):
+        if w:
+            r.country, r.city, r.muni, r.settlement = w
+            r.name = osmplaces.street_name(r.name, by_iso[r.country]) or r.ref
     del mids, found
-    print(f"roads: {len(net.edges)} edges, {len(net.nodes)} nodes; "
-          f"{len({(r.city, r.muni) for r in roads.values()})} cities, "
-          f"{len({r.settlement for r in roads.values()} - {None})} settlements")
+    outside = sum(1 for e in net.edges if not e.road.country)
+    net = osmnet.Network([e for e in net.edges if e.road.country])
+    for i, e in enumerate(net.edges):
+        for pt in (e.a, e.b):
+            net.nodes.setdefault(pt, []).append(i)
+    print(f"roads: {len(net.edges)} edges ({outside} outside the countries left out), {len(net.nodes)} nodes; "
+          f"{len({(r.country, r.city, r.muni) for r in roads.values() if r.country})} cities, "
+          f"{len({(r.country, r.settlement) for r in roads.values() if r.settlement and r.country})} settlements")
+    del roads
 
     # level 0 parcels and house numbers
     gbox = (*gps(bbox[0], bbox[1]), *gps(bbox[2], bbox[3]))
     leaves = parcelbuild.tile(net.edges, gbox)
     parcelbuild.nudge_edges(net.edges, leaves)
     by_level = {0: parcelbuild.clip(net.edges, leaves)}
-    addresses = osmaddr.load(osm, bbox, country)
+    addresses = osmaddr.load(osm, bbox, package[0])      # one street rule per package (countries.py)
     numbered = osmaddr.assign(by_level[0], addresses)
-    rules = osmturns.restrictions(args.temp / "osm" / f"{extract}-latest.osm.pbf")
+    rules = list(dict.fromkeys(r for x in extracts for r in osmturns.restrictions(args.temp / "osm" / f"{x}-latest.osm.pbf")))
     n_turns = osmturns.assign(by_level[0], parcelbuild.sorted_pieces, rules)
     n_addresses = len(addresses)
     del addresses                           # millions of tuples for a country
@@ -240,7 +257,7 @@ def main():
     for k, pcs in by_level.items():
         for n, pc in enumerate(pcs):
             keys[id(pc)] = (f"p{k}", n)
-    ctx = Context(db, keys, top, country)
+    ctx = Context(db, keys, top, package)
     with open(args.template, "rb") as t:
         packer = pack.Packer(*header_info(t), TEXT_TABLES)
 
@@ -286,17 +303,17 @@ def main():
         for piece in pc.pieces:
             rd = piece.road
             mid = piece.points[len(piece.points) // 2]
-            for key in ((rd.settlement or rd.city, rd.city), (rd.city, None)):
+            for key in ((rd.country, rd.settlement or rd.city, rd.city), (rd.country, rd.city, None)):
                 s_ = sums.setdefault(key, [0, 0, 0])
                 s_[0] += mid[0]
                 s_[1] += mid[1]
                 s_[2] += 1
 
-    def settlement_pos(name, city):
-        s_ = sums.get((name, city)) or sums.get((name, None)) or sums.get((name, name))
+    def settlement_pos(iso, name, city):
+        s_ = sums.get((iso, name, city)) or sums.get((iso, name, None)) or sums.get((iso, name, name))
         return (s_[0] // s_[2], s_[1] // s_[2]) if s_ else (0, 0)
 
-    cities = search.collect(by_level[0], parcelbuild.sorted_pieces, settlement_pos)
+    cities = search.collect(by_level[0], parcelbuild.sorted_pieces, settlement_pos, by_iso)
     for c in cities:                        # destination segment: the city's segment nearest its middle
         best = None
         for _, _, _, items in c.entries:
@@ -313,19 +330,19 @@ def main():
         t.seek(4 * 2048)
         b4 = t.read(2048)
     off, count = struct.unpack_from(">HH", b4, 8)
-    template_country = next(b4[r:r + 56] for i in range(count)
-                            for n, _, _, r in [struct.unpack_from(">HHHH", b4, off + 8 * i)]
-                            if b4[r + 46:r + 48] == country.template.encode())
+    template_records = {b4[r + 46:r + 48].decode(): b4[r:r + 56] for i in range(count)
+                        for n, _, _, r in [struct.unpack_from(">HHHH", b4, off + 8 * i)]}
 
     # POI: basic categories, listed under their gmina's city record and (airports, museums) the country
-    pois = osmpoi.load(osm, bbox, country)
-    osmpoi.place(pois, places, by_level[0], parcelbuild.sorted_pieces)
-    poi = osmpoi.PoiTables(pois, {(c.name, c.muni) for c in cities}, country.name, country.lang)
+    pois = osmpoi.load(osm, bbox, package[0])
+    osmpoi.place(pois, atlas, by_level[0], parcelbuild.sorted_pieces)
+    poi = osmpoi.PoiTables(pois, {(c.country.iso, c.name, c.muni) for c in cities})
     for c in cities:
-        c.poi = poi.city_lists.get((c.name, c.muni), [])
+        c.poi = poi.city_lists.get((c.country.iso, c.name, c.muni), [])
     parcel_ptr = lambda pc: db.resolve(keys[id(pc)])
-    search.add_tables(db, cities, (country.name, country.number, country.iso), template_country, dbwrite.Unit,
-                      dbwrite.Table, parcel_ptr, lambda key: poi.list_ref(db.resolve, key), poi.country_lists)
+    search.add_tables(db, cities, [(c, template_records[c.template], poi.country_lists.get(c.iso, []))
+                                   for c in package], dbwrite.Unit, dbwrite.Table, parcel_ptr,
+                      lambda key: poi.list_ref(db.resolve, key))
     print(f"search: {len(cities)} cities, {sum(len(c.entries) for c in cities)} street entries")
     n11 = len(poi.units)
     db.add(dbwrite.Table(0x11, [dbwrite.Unit(("p11", i), lambda resolve, i=i: poi.name_unit(
@@ -346,8 +363,8 @@ def main():
         "SELECT p.osm_id, p.name FROM points p JOIN rtree_points_geom r ON p.fid = r.id WHERE r.maxx >= ? AND "
         "r.minx <= ? AND r.maxy >= ? AND r.miny <= ? AND p.place IN ('city', 'town')",
         (bbox[0], bbox[2], bbox[1], bbox[3])) if n}
-    towns = [(a.name, ring) for a in places.levels[country.levels[2]] if (a.base or a.name) in town_names
-             for ring in a.rings]
+    towns = [(a.name, ring) for c in package for a in atlas.places[c.iso].levels[c.levels[2]]
+             if (a.base or a.name) in town_names for ring in a.rings]
     shapes = osmbg.merge_lines(osmbg.clip_to_area(osmbg.load(osm, bbox, bg_roads, towns), gbox))
     for level in range(6):
         tiles = osmbg.tiles(level, gbox, osmbg.level_shapes(shapes, level), parcelbuild.ORIGIN)
@@ -368,6 +385,14 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     mkdisc.build(args.database, args.output, args.template_disc, False)
     print(f"disc: {args.output} + .cue in {time.monotonic() - t0:.0f} s")
+    if len(package) > 1:                    # what each country takes, by its share of the level 0 segments
+        segs = Counter(piece.road.country for pc in by_level[0] for piece in pc.pieces)
+        n_city = Counter(c.country.iso for c in cities)
+        n_poi = Counter(p.country.iso for p in poi.pois)
+        for c in package:
+            share = segs[c.iso] / max(1, sum(segs.values()))
+            print(f"  {c.iso} {c.name}: {segs[c.iso]} segments, {n_city[c.iso]} cities, {n_poi[c.iso]} poi, "
+                  f"~{share * blocks * 2048 / 1e6:.0f} MB")
 
 
 if __name__ == "__main__":

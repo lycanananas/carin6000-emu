@@ -420,8 +420,11 @@ u16 offset of the category's brand list (slot 5: 12 B, table 12 unit / offset / 
 6-byte records: u8 index, 5-byte car registration code, the code the menus show): an
 alphabetical English list of 240 countries (1 AFG, 33 BG, 53 HR, 56 CZ, 81 D, 97 H, 171 PL, 176
 RO, 188 WAL, 190 SK, 191 SLO, 237 YU, 240 ZW; gaps have no code). Without a map the menus show
-D (81). The country name comes from the disc. Serbia has no code of its own: the encoder uses
-237 YU, with Croatia's record constants, settings and language byte.
+D (81). The country name comes from the disc. Serbia has no code of its own: the encoder gives
+all ExYugoslavia countries (si, hr, ba, me, rs, xk, mk, al) 237 YU, each its own country record
+(name, ISO code, city trie) with the same number; block 2 slot 2 then holds the settings of 237
+once (hr and si have identical settings on the original). *Open*: whether the firmware anywhere
+picks a country by its number alone (then countries sharing a number could be mixed up).
 
 `tests/check_search.py` walks the chain like the device (the original passes 92-99.9 %: names in
 other languages; the encoder output 100 %).
@@ -464,7 +467,10 @@ What `navdb/encoder.py` does, as rules any writer must follow:
    background table gets at least one unit.
 6. **Search**: country, cities (gminas + settlements), streets with rotations, tries whose
    leaves stay inside one name unit, linked lists, city destinations; block 0 0x0c / 0x44 = the
-   country trie root count; block 2 slot 2 = only our country (settings of its template country).
+   country trie root count; block 2 slot 2 = only our countries' numbers (settings of their
+   template countries). Several countries per disc: block 4 rows and records sorted by name,
+   block 3 one leaf per first letter (as the original), a city trie per country in shared
+   e / d / 10 / f tables; a parcel at a border lists both countries in slot 0.
    Trie leaves are split by size too (big cities' street lists).
    **Prohibited turns** (slot 10) from OSM restriction relations via a node, read from the .osm.pbf
    (`libs/osmturns.py`): no_* = that turn, only_* = every other turn at the node; the target is a
@@ -483,8 +489,9 @@ Verification: `tests/check_db.py` (structure rules; the original passes them too
 `tests/check_search.py` (the address search chain), `tests/compare_osm.py` (road lengths per
 attribute group against OSM), decoding with `decoder.py`, and finally the device / emulator.
 
-**OSM mapping** (`libs/osmnet.py`, `osmplaces.py`, `osmaddr.py`, `osmbg.py`, `osmpoi.py`; one
-country per disc, `libs/countries.py`):
+**OSM mapping** (`libs/osmnet.py`, `osmplaces.py`, `osmaddr.py`, `osmbg.py`, `osmpoi.py`;
+packages of countries, `libs/countries.py`; a road, POI or place belongs to the country whose
+admin_level 2 boundary holds it, the rest is left out):
 
 | OSM | CARiN |
 |---|---|
@@ -495,6 +502,7 @@ country per disc, `libs/countries.py`):
 | name (Poland: + "ulica " unless it starts with a street word), ref; Cyrillic → Latin (đ = dj), then ASCII | street name |
 | Poland admin_level 7 / 6 / 8 / 9, place nodes | city (gmina) / municipality (powiat) / settlement / district |
 | Serbia admin_level 7 else 8 / 6 / 9 / 8; "Град (Кварт)" → district, "(село)" dropped | city (grad, opština) / municipality (okrug) / settlement (naselje) / district (gradska opština) |
+| other ExYugoslavia countries: the levels in `libs/countries.py`; bilingual "a / b" names → a; Albanian "Komuna e Prishtinës" → "prishtine" | city / municipality / settlement / district |
 | addr:housenumber + addr:street | house numbers on the nearest segment of the street, by side |
 | amenity fuel / hospital / police / bus_station / car_rental / parking + park_ride, tourism hotel / motel / museum, shop car / car_repair, railway station / halt, aeroway aerodrome (iata or public) | POI 12 / 41 / 42 / 54 / 13 / 15, 21 / 32, 11 / 59, 51, 52 |
 | natural water, landuse forest, leisure park, landuse cemetery, landuse residential …, place island, waterway river / canal, railway rail | background areas 1, 3, 3, 6, 5, 8 and lines 101, 102 |
