@@ -236,7 +236,8 @@ def main():
                                   "node and its headings exist in the child",
                                   "edge point and its headings exist in the child",
                                   "prohibited turn -> segment at the via node",
-                                  "spatial index -> covering unit", "background layout round trip",
+                                  "spatial index -> covering unit", "index unit within 5 blocks",
+                                  "background layout round trip",
                                   "background groups and end records")}
     for tid, level in LEVELS:
         (a, _), (b, _), (c, _) = tables.get(tid, ((0, 0), (0, 0), (0, 0)))
@@ -274,6 +275,19 @@ def main():
                 d = get(ptr)
                 x0, y0, x1, y1 = struct.unpack_from(">4i", d, 0x20)
                 res["spatial index -> covering unit"][x0 <= x + size // 2 < x1 and y0 <= y + size // 2 < y1] += 1
+    # index units (kind 9) at most 5 blocks, as the original's largest: with up to 9 the device
+    # read the level 0 background index and then no unit
+    for ptr in spindex.directory(f):
+        b = ptr >> 8
+        while True:
+            u = read_unit(f, (b << 8) | 8)
+            if struct.unpack_from(">H", u, 4)[0] != 8:
+                break
+            off, cnt = struct.unpack_from(">HH", u, 8)
+            for leaf in struct.unpack_from(f">{cnt}I", u, off):
+                if leaf:
+                    res["index unit within 5 blocks"][leaf & 0xFF <= 5] += 1
+            b += u[3]
     failed = 0
     for name, c in res.items():
         if c:

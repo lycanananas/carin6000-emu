@@ -25,17 +25,19 @@ Open the `.gpkg` file in QGIS. The styles load automatically.
 ### B. Make your own map disc from OpenStreetMap
 
 ```bash
-python3 navdb/encoder.py poland         # Poland (~11 min, 10 GB RAM, 553 MB disc) -> cd/carin_poland.img + .cue
-python3 navdb/encoder.py exyugoslavia   # 8 countries of former Yugoslavia + Albania (~11 min, 8.5 GB RAM, 451 MB disc)
+python3 navdb/encoder.py poland         # Poland (~15 min, 10 GB RAM, ~400 MB disc) -> cd/carin_poland.img + .cue
+python3 navdb/encoder.py exyugoslavia   # 8 countries of former Yugoslavia + Albania -> cd/carin_exyugoslavia.img + .cue
 ```
 
-One disc = one package of countries. The encoder downloads the data from Geofabrik itself (one extract per country), converts it with `ogr2ogr` and builds the disc image `cd/carin_PACKAGE.img` + `.cue`.
+Run from the repository root. One disc = one package of countries. The encoder downloads the data from Geofabrik itself (one extract per country), converts it with `ogr2ogr` and builds the disc image `cd/carin_PACKAGE.img` + `.cue`.
 
 Checking the result:
 
 ```bash
-python3 navdb/tests/check_db.py temp/navdb/poland/carindb --every 20
+python3 navdb/tests/check_db.py temp/navdb/poland/carindb --every 200     # every 200th parcel, ~5 min
 python3 navdb/tests/check_search.py temp/navdb/poland/carindb
+python3 navdb/tests/check_db.py temp/navdb/exyugoslavia/carindb --every 200
+python3 navdb/tests/check_search.py temp/navdb/exyugoslavia/carindb
 ```
 
 The disc is used like the original map disc: in the unit (burn it with `cd cd && cdrdao write --device /dev/sr0 carin_poland.cue`) or in the emulator; both are described in the [main README](../README.md). navdb itself never runs the emulator.

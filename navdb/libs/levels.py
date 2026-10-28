@@ -164,6 +164,9 @@ MAX_UPPER = 1 << 21                     # parcel side on levels 1-3 in the origi
 
 
 MIN_UPPER = {1: 1 << 18, 2: 1 << 18, 3: 1 << 20}   # 1/64 of the index cell of tables 1e, 3 (N 32), 2 (N 8)
+DENSE_UPPER = {1: 1 << 17}               # smaller still where a parcel would not fit in 8 blocks (Belgrade:
+                                         # 409 segments in 2^18); the encoder then doubles the index grid
+DENSE_BYTES = 17200                      # estimate above which (Poland's largest at 2^18: 17068, fits)
 
 
 def upper_tiles(lower, edges, level):
@@ -186,8 +189,10 @@ def upper_tiles(lower, edges, level):
         largest = max(c.box.size for c in kids)
         smallest = min(c.box.size for c in kids)
         items = [x for x in load if _touches(box, x[0])]
-        too_big = sum(c for _, c in items) > MAX_UPPER_BYTES or box.size > MAX_UPPER or box.size > 16 * smallest
-        if too_big and box.size // 2 >= max(largest, MIN_UPPER[level]):
+        est = sum(c for _, c in items)
+        too_big = est > MAX_UPPER_BYTES or box.size > MAX_UPPER or box.size > 16 * smallest
+        floor = DENSE_UPPER.get(level, MIN_UPPER[level]) if est > DENSE_BYTES else MIN_UPPER[level]
+        if too_big and box.size // 2 >= max(largest, floor):
             h = box.size // 2
             return [leaf for dx in (0, h) for dy in (0, h) for leaf in split(Box(box.x + dx, box.y + dy, h))]
         return [box]

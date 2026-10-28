@@ -38,7 +38,8 @@ sys.path.insert(0, str(ROOT / "navdb/tools"))
 import mkdisc  # noqa: E402
 TABLES = {0: 1, 1: 0x1E, 2: 3, 3: 2}         # routing level -> table id
 GRIDS = {0: 512, 1: 32, 2: 32, 3: 8}         # spatial index grid N per level (as the original)
-BACKGROUND = {6: 32, 0x16: 32, 0x15: 32, 0x1C: 1, 0x14: 1, 0x1D: 1}     # table: index grid N
+BACKGROUND = {6: 128, 0x16: 128, 0x15: 128, 0x1C: 1, 0x14: 1, 0x1D: 1}   # table: index grid N (the original:
+             # 32 for 6 / 16 / 15; 128 keeps our small units few per index cell, see osmbg.INDEX_UNITS)
 # the router's default speeds in m/s (rpmod data 0x18ca): form of way 0 (motorway), 3, others; by class
 SPEEDS = {0: (36, 36, 36, 36, 7.5, 4.5, 3), 3: (28, 28, 16.5, 12, 7.5, 4.5, 3),
           -1: (24, 24, 16.5, 12, 7.5, 4.5, 3)}
@@ -250,7 +251,7 @@ def main():
             if child.parent:
                 child.parent.children.append(child)
     travel_times(net.edges, top, by_level[0])
-    bg_roads = [e for e in net.edges if e.road.cls <= 3 and e.road.kind != 5]     # for the background
+    bg_roads = [e for e in net.edges if e.road.cls <= 2 and e.road.kind != 5]     # for the background
     del net, keep_by, inc_by, edges, fixed   # the network lives on in the parcels
     for k, pcs in by_level.items():
         print(f"level {k}: {len(pcs)} parcels, {sum(len(pc.pieces) for pc in pcs)} segments, "
@@ -280,7 +281,8 @@ def main():
         else:
             build = lambda pc, k=k: parcelfmt.write(levels.build_upper(pc, k, ctx))
         units = [dbwrite.Unit(keys[id(pc)], lambda resolve, pc=pc, build=build: build(pc)) for pc in pcs]
-        index = spindex.IndexPart(GRIDS[k], [(pc.box.x, pc.box.y, pc.box.x + pc.box.size,
+        grid = max(GRIDS[k], spindex.EXTENT // (64 * min((pc.box.size for pc in pcs), default=spindex.EXTENT)))
+        index = spindex.IndexPart(grid, [(pc.box.x, pc.box.y, pc.box.x + pc.box.size,
                                               pc.box.y + pc.box.size, keys[id(pc)]) for pc in pcs])
         db.add(dbwrite.Table(TABLES[k], units, index))
     hn_units = []
@@ -381,14 +383,16 @@ def main():
     osmbg.name_builtup(shapes, place_of, {n for n, _ in towns})
     shapes = osmbg.merge_lines(osmbg.clip_to_area(shapes, gbox))
     for level in range(6):
-        tiles = osmbg.tiles(level, gbox, osmbg.level_shapes(shapes, level), parcelbuild.ORIGIN)
+        dropped = Counter()
+        tiles = osmbg.tiles(level, gbox, osmbg.level_shapes(shapes, level), parcelbuild.ORIGIN, dropped)
         bkeys = [("bg", level, n) for n in range(len(tiles))]
         units = [dbwrite.Unit(bkeys[n], lambda resolve, data=data, key=bkeys[n]:
                               osmbg.with_pointer(data, resolve(key)))
                  for n, (box, data) in enumerate(tiles)]
         db.add(dbwrite.Table(osmbg.TABLE[level], units,
                              spindex.IndexPart(BACKGROUND[osmbg.TABLE[level]], [(*box, bkeys[n]) for n, (box, _) in enumerate(tiles)])))
-        print(f"background level {level}: {len(tiles)} units")
+        print(f"background level {level}: {len(tiles)} units, {dropped['shapes']} shapes left out of full "
+              f"units ({dropped['roads']} roads)")
     del shapes
 
     # block 1: database info with this conversion (ISO 8601 UTC time, host)

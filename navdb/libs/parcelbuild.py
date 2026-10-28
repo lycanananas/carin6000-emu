@@ -268,7 +268,8 @@ def clip(edges, leaves, fixed=frozenset(), record=False):
                     used.add((id(cur), c))
                     used.add((id(leaf), c))
                     acc += _emit(pa, piece, e.road, (start_border, True), e, scale)
-                    marks[c] = acc
+                    if marks is not None:        # None: a piece was dropped, the edge goes up unmarked
+                        marks[c] = acc
                     pa.borders[c], pb.borders[c] = pb, pa
                     cur, piece, start_border = leaf, [c], True
                 else:

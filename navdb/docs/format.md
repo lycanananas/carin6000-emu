@@ -357,8 +357,11 @@ slot has offset 0.
 
 **Area types**: 1 water, 3 forest / park, 5 built-up (named after the town on coarse levels), 6
 cemetery, 8 land / island. **Line types** (**checked**): 101 rivers and canals, 102 railways
-(level 0), 103 probably borders (levels 3-5), 104 main roads (A, S, main national), 105 other
-national roads, 106 voivodeship roads. The original drops 106 above level 1 and 105 above level 2.
+(level 0), 103 probably borders (levels 3-5), 104 / 105 / 106 = roads of routing class 0 / 1 / 2
+(**checked**: every original level 0 line over Warsaw lies on segments of that class; no class 3).
+The original drops 106 above level 1 and 105 above level 2. The device does not draw every type at
+every zoom: with class 2 as 105 (discs before 2026-10-28) Marszałkowska vanished at the 1 km scale
+while its side streets (class 3 as 106) showed.
 
 What the original shows per level (around Warsaw): levels 0-1 built-up areas named after the
 village / town (one area per place), forests, water, rivers of some length; level 2 towns,
@@ -366,18 +369,23 @@ few forests, long rivers; levels 3-4 only towns, big water, rivers like the Vist
 and borders (103); level 5 the biggest towns and borders. The encoder follows this: landuse
 built-up on levels 0-1 (the largest area of each village / town district named), towns from
 level 1, forests up to 2, cemeteries up to 1, rivers by length (named from 20 km, levels 3-4
-from 150 km). A unit that gets too full drops the rest first (small areas, roads; on levels 1-2
-all roads, the routing parcels draw them there), then areas of ≥ 5 × the level's smallest area
-and, on levels 3-4, main roads (104) (by m² / length²), big towns, big water (≥ 20 ×) and named
-rivers last. Levels 1-2 keep only roads 104-105 / 104: with roads first, a Warsaw unit of level 1
-held only roads (every carriageway is a line).
+from 150 km). **The map draws its roads from the background on every level** (seen on the device:
+without background roads 10-20 km showed no roads, a full unit a square without roads), so roads
+come first: a unit that gets too full drops the rest first, then roads 106 and areas of ≥ 5 × the
+level's smallest area, then roads 105, big water (≥ 20 ×) and named rivers, main roads (104) and
+big towns last; before dropping, a full unit is simplified at 2× and 4× the level's tolerance
+(dropping cut roads at their junctions: the short pieces go first). Roads per level as the
+original: classes ≤ 2 on levels 0-1, ≤ 1 on 2, 0 on 3-4; no slip roads; one line per road (an edge running along roads already taken, within 25 /
+60 / 150 / 400 / 1000 m, is left out: the other carriageway, parallel roads), merged end to end.
 
-**Keep the original's density.** The device holds about as many units per view as the original
-needs (its cache / RAM is sized for that): units below the original's smallest side (2^19 / 2^21 /
-2^22 on levels 0-2) are not made, a full unit drops shapes instead. Discs before 2026-10-28 split
-down to 2^18 and needed 5-7x the original's background bytes per view (Warsaw at bg1: 356 KB
-against 50 KB); the device then drew roads in pieces and lost parts of the map, and the router
-(level 0 parcels with 4.3 shape points per segment, the original has 1.35) stopped mid-route.
+Units: levels 0-2 split while too big down to 2^18 (smaller units than the original's draw fine;
+the device's RAM does not limit them), levels 3-5 have one size (2^24-2^26) and only drop shapes.
+**At most ~500 units per spatial index cell** (2^24 on levels 0-2 at N 32): the cell's kind 9 unit then
+stays within 5 blocks (the original's largest). A disc with ~1000 small level 0 units under Warsaw
+had kind 9 units of 6-9 blocks; the device read that index and never read a level 0 unit (no
+background at 500 m / 1 km). Where a cell would get more, its units are made larger and drop shapes.
+The encoder's background indexes use N = 128 (cell 2^22, at most 256 units of 2^18), the original
+32; N is free per table (the original: 512, 256, 32, 8, 1; the kind 8 unit holds the cell size).
 
 ## 7. POI (tables 7, 11, 12)
 
@@ -497,7 +505,9 @@ What `navdb/encoder.py` does, as rules any writer must follow:
    segment (length = sum; loops cut in two), shapes simplified (keeping the level 0 edge points
    and their neighbours: upper edge points are level 0 ones); a node kept on a level is kept on
    every level below, node byte c = 3 − its top level; parcels are quadtree ancestors of the level
-   below (≥ 2^18 for levels 1-2, ≥ 2^20 for level 3, ≤ 2^21), parent pointers and child grids.
+   below (≥ 2^18 for levels 1-2, ≥ 2^20 for level 3, ≤ 2^21; level 1 down to 2^17 where a 2^18
+   parcel would not fit in 8 blocks, e.g. Belgrade with 409 segments, and then table 1e's index
+   grid is 64 instead of 32 so a subcell stays ≥ 1/64 of a cell), parent pointers and child grids.
    Level 0 header 0x60-0x68 = mean travel time to each level's network.
 4. **House number units** per parcel with numbers (0x54, byte 0x70).
 5. **Background**: only for the encoded area, 6 levels with the original unit sizes, groups in
