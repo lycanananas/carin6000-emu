@@ -146,7 +146,18 @@ One window opens (layout `mame/src/mame/layout/carin.lay`): the navigation scree
 
 Ignition: the IGNITION button in the CAR section of the panel or the **I** key (toggle). After switching it off, the system saves its settings to NV after about 25 s and powers down, and the slave cuts the power (black screen). Switching the ignition on again starts the unit. This is how to force saving the settings before closing MAME.
 
-Keyboard: 1 Mute nav, 2 Last message, 3 VOL+, 4 VOL−, 5 knob push, 7 Stand by, 8 Address book, ←/→ knob; 6 and 9 start the diagnostic self-test; Q/W/E/R are codes the software does not handle. Names and keys can be changed in MAME (Tab → Input). By default emulation runs as fast as possible (`-nothrottle`); `--realtime` slows it to the real unit's speed, `--speed X` runs it at X times that. The MAME menu (Tab) always works; `gui` starts MAME with `-ui_active`. A disc is inserted while running through Tab → File Manager → cdrom (eject: "[empty slot]").
+Keyboard: 1 Mute nav, 2 Last message, 3 VOL+, 4 VOL−, 5 knob push, 7 Stand by, 8 Address book, ←/→ knob; 6 and 9 start the diagnostic self-test; Q/T/E/R are codes the software does not handle. Names and keys can be changed in MAME (Tab → Input). By default emulation runs as fast as possible (`-nothrottle`); `--realtime` slows it to the real unit's speed, `--speed X` runs it at X times that. The MAME menu (Tab) always works; `gui` starts MAME with `-ui_active`. A disc is inserted while running through Tab → File Manager → cdrom (eject: "[empty slot]").
+
+### Car simulator
+
+`gui` shows the car simulator to the right of the unit, in the same window (view `Navigation, panel, console and car`, drawn by the plugin `mame/plugins/carsim`). The driver simulates the car behind the slave: every second the slave reports to `dp` what a real one would, i.e. the dead reckoning record (h_itc B2: distance, heading change, speed, time, position and its error, status) and the GPS receiver (B3). The simulator shows the car on OpenStreetMap tiles (green arrow with a GPS fix, red without one), its trail, a scale bar, its position, speed, heading and odometer.
+
+- Drive with **W/S** (speed up/down; the speed holds when you let go, like cruise control; S below 0 reverses), **A/D** (steer; only while moving) and **Z** (stop).
+- Tab → Plugin Options → **Car simulator**: type the coordinates (`52.2297, 21.0122`, `52.2297N 21.0122E`, Backspace and Del edit), then "Move the car there". The same menu sets the speed and heading (←/→), covers the GPS antenna, sets the zoom, turns the tiles on or off and clears the trail.
+- `--car-at LAT,LON` moves the car there at start; `--no-tiles` drops the map tiles; `--no-car` runs without the simulator.
+- Tiles come from tile.openstreetmap.org (curl in the background, two at a time) and are cached in `temp/osm_tiles/`. A tile older than 30 days is fetched again. At start `carin.py` trims the cache to 1 GB, dropping the tiles unused for the longest time.
+
+When the car is more than 500 m from where the slave last reported it, or from where `dp` thinks it is (stored position at start, manual relocation), the slave flags a position jump, and CARiN moves over at once, even standing still. Smaller differences are corrected while driving with a GPS fix, once CARiN trusts the GPS (about 30 s). Field units and the meaning of the status bits come from analysis of `dp` (static, then checked at run time with breakpoints); see the comment at `slave_dr_tick` in `carin.cpp`. The system diagnosis ("Read I/O state", tacho pulses) asks the slave on a separate channel (h_itc 0x8A), which the HLE does not answer yet.
 
 ## Custom discs (cfw)
 

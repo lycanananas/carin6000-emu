@@ -156,6 +156,31 @@ def check_parcel(d, ptr, level, sizes, get, res):
                 cx, cy = x0 + i * cell + cell // 2, y0 + j * cell + cell // 2
                 c0x, c0y, c1x, c1y = struct.unpack_from(">4i", cd, 0x44)
                 res["child grid -> child at cell centre"][c0x <= cx < c1x and c0y <= cy < c1y] += 1
+        # going down: every node and edge point is in the child at its grid cell, with the
+        # headings of the segments there (the router goes down by point and heading)
+        crs = sizes[0x08] if level == 1 else sizes[0x09]
+        top_class = {1: 2, 2: 1, 3: 0}[level]
+        heads = {}
+        for r in segs:
+            for end, h in ((0, 14), (2, 15)):
+                heads.setdefault(w(d, r + end), set()).add(d[r + h])
+        for o, hs in heads.items():
+            pt = (x0 + w(d, o) * 64, y0 + w(d, o + 2) * 64)
+            i, j = (min(max((pt[k] - (x0, y0)[k]) // cell, 0), n - 1) for k in (0, 1))
+            cd = get(struct.unpack_from(">I", d, s8 + 4 * (i * n + j))[0]) if n else None
+            here = set()
+            if cd:
+                cx0, cy0 = struct.unpack_from(">ii", cd, 0x44)
+                c4, cc4 = w(cd, 8 + 16), w(cd, 10 + 16)
+                for q in range(cc4):
+                    r = c4 + crs * q
+                    if cd[r + 16] & 15 <= top_class:
+                        for end, h in ((0, 14), (2, 15)):
+                            e = w(cd, r + end)
+                            if (cx0 + w(cd, e) * 64, cy0 + w(cd, e + 2) * 64) == pt:
+                                here.add(cd[r + h])
+            key = "edge point" if s6 <= o < s6 + 16 * c6 else "node"
+            res[f"{key} and its headings exist in the child"][hs <= here] += 1
     if level == 0 and d[0x70]:
         hn = read_unit_raw(struct.unpack_from(">I", d, 0x54)[0])
         res["house number unit -> its parcel"][struct.unpack_from(">I", hn, 12)[0] == ptr and w(hn, 10) == c4] += 1
@@ -208,6 +233,8 @@ def main():
                                   "node ring = degree", "node type by degree", "edge point reciprocal",
                                   "slot 9 = edge point neighbours", "shape ranges increase",
                                   "heading at an up node exists in the parent",
+                                  "node and its headings exist in the child",
+                                  "edge point and its headings exist in the child",
                                   "prohibited turn -> segment at the via node",
                                   "spatial index -> covering unit", "background layout round trip",
                                   "background groups and end records")}

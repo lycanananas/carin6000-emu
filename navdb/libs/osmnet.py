@@ -120,6 +120,7 @@ class Edge:
     length: int = 0      # metres
     h0: int = None       # heading at a / at b (+14 / +15); None = from the points. Upper levels
     h1: int = None       # take them from level 0, as the router matches levels by heading
+    marks: dict = None   # point -> metres from a, as the level 0 pieces add up (parcelbuild.clip)
 
     def points(self):
         return [self.a, *self.shape, self.b]

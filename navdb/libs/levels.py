@@ -41,10 +41,11 @@ def kept_nodes(edges, cls_max):
     return keep, inc
 
 
-def join(edges, cls_max, keep, inc, tol=0, nodes=(), top=None, level=None):
+def join(edges, cls_max, keep, inc, tol=0, nodes=(), top=None, level=None, fixed=frozenset()):
     """Edges of the level: chains of level 0 edges between kept nodes (shape = all points). A
     chain that comes back to its start is cut at the level 0 node nearest its middle, which then
-    exists on this level (top[] is raised)."""
+    exists on this level (top[] is raised). Simplifying keeps the level 0 edge points (fixed) and
+    their neighbours, so an edge point here has the position and headings of level 0."""
     used = set()
     out = []
     for start in keep:
@@ -52,6 +53,7 @@ def join(edges, cls_max, keep, inc, tol=0, nodes=(), top=None, level=None):
             if i in used:
                 continue
             pts, length, cur, road = [start], 0, start, edges[i].road
+            marks = {}                           # point -> metres from the start (level 0 sums)
             j = i
             forward = None
             while True:
@@ -65,6 +67,10 @@ def join(edges, cls_max, keep, inc, tol=0, nodes=(), top=None, level=None):
                     h0 = eh[0]                   # the router finds a level's segment by heading
                 h1 = eh[1]
                 pts += seq[1:]
+                if length:
+                    marks[cur] = length
+                for p, m in (e.marks or {}).items():
+                    marks[p] = length + (m if fwd else e.length - m)
                 length += e.length
                 cur = seq[-1]
                 if cur in keep:
@@ -82,28 +88,36 @@ def join(edges, cls_max, keep, inc, tol=0, nodes=(), top=None, level=None):
                     k = min(inner, key=lambda k: abs(k - len(pts) // 2))
                     if top is not None:
                         top[pts[k]] = max(top.get(pts[k], 0), level)
-                    share = length * k / (len(pts) - 1)
+                    share = marks.get(pts[k], round(length * k / (len(pts) - 1)))
                     heads = ((h0, heading(pts[k], pts[k - 1])), (heading(pts[k], pts[k + 1]), h1))
-                    for (part, ln), (a0, a1) in zip(((pts[:k + 1], round(share)), (pts[k:], length - round(share))), heads):
-                        part = simplify(part, tol) if tol else part
-                        out.append(Edge(part[0], part[-1], part[1:-1], r, max(1, ln), a0, a1))
+                    halves = ((pts[:k + 1], share, {p: m for p, m in marks.items() if m < share}),
+                              (pts[k:], length - share, {p: m - share for p, m in marks.items() if m > share}))
+                    for (part, ln, mk), (a0, a1) in zip(halves, heads):
+                        part = simplify(part, tol, fixed) if tol else part
+                        out.append(Edge(part[0], part[-1], part[1:-1], r, max(1, ln), a0, a1, mk))
                     continue
-            pts = simplify(pts, tol) if tol else pts
-            out.append(Edge(pts[0], pts[-1], pts[1:-1], r, length, h0, h1))
+            pts = simplify(pts, tol, fixed) if tol else pts
+            out.append(Edge(pts[0], pts[-1], pts[1:-1], r, length, h0, h1, marks))
     return out
 
 
-TOLERANCE = {1: 5, 2: 15, 3: 40}     # metres: shape simplification per level (nodes and lengths stay)
+TOLERANCE = {0: 2, 1: 5, 2: 15, 3: 40}     # metres: shape simplification per level (nodes and lengths stay;
+                                          # level 0: the original has 1.35 shape points per segment)
 
 
-def simplify(pts, tol):
-    """Douglas-Peucker on GPS-unit points (tolerance in metres, local scale)."""
+def simplify(pts, tol, fixed=frozenset()):
+    """Douglas-Peucker on GPS-unit points (tolerance in metres, local scale); points in fixed and
+    their neighbours are kept."""
     if len(pts) < 3:
         return pts
     t = tol / 1.8e-7 / 111320
     keep = [False] * len(pts)
     keep[0] = keep[-1] = True
-    stack = [(0, len(pts) - 1)]
+    for k, p in enumerate(pts):
+        if p in fixed:
+            keep[max(k - 1, 0):k + 2] = [True] * len(keep[max(k - 1, 0):k + 2])
+    marks = [k for k, v in enumerate(keep) if v]
+    stack = list(zip(marks, marks[1:]))
     while stack:
         i, j = stack.pop()
         ax, ay = pts[i][0] * 0.62, pts[i][1]
@@ -154,9 +168,10 @@ MIN_UPPER = {1: 1 << 18, 2: 1 << 18, 3: 1 << 20}   # 1/64 of the index cell of t
 
 def upper_tiles(lower, edges, level):
     """Leaf boxes of a level: quadtree ancestors of the lower level's parcels (each child lies in
-    one parent), at most MAX_UPPER wide and split while too big. The child grid (slot 8) names the
-    child at each cell centre, so children may be smaller than a cell (as in the original)."""
-    from .parcelbuild import MAX_BYTES, _touches
+    one parent), at most MAX_UPPER wide and split while too big or while a child is smaller than
+    1/16 of the box: the child grid (slot 8) has cells of at least 1/16 and names the child at each
+    cell centre, so the router (it goes down by the grid) would miss the nodes of a smaller child."""
+    from .parcelbuild import MAX_UPPER_BYTES, _touches
     load = [(e.points(), 40 + 6 * len(e.shape)) for e in edges]
     from .parcelbuild import ORIGIN
     root = Box(lower[0].box.x, lower[0].box.y, lower[0].box.size)
@@ -169,8 +184,9 @@ def upper_tiles(lower, edges, level):
         if not kids:
             return []
         largest = max(c.box.size for c in kids)
+        smallest = min(c.box.size for c in kids)
         items = [x for x in load if _touches(box, x[0])]
-        too_big = sum(c for _, c in items) > MAX_BYTES or box.size > MAX_UPPER
+        too_big = sum(c for _, c in items) > MAX_UPPER_BYTES or box.size > MAX_UPPER or box.size > 16 * smallest
         if too_big and box.size // 2 >= max(largest, MIN_UPPER[level]):
             h = box.size // 2
             return [leaf for dx in (0, h) for dy in (0, h) for leaf in split(Box(box.x + dx, box.y + dy, h))]

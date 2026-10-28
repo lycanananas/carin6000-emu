@@ -229,7 +229,7 @@ after pbp's second pass, slot 14 on levels 1-3).
 | 5 | 0x10 (8 B) | **nodes**: x, y, +4 a segment at the node (entry into its ring), +6 node byte, +7 0 |
 | 6 | 0x06 (16 B) | **edge points** (on the parcel border): x, y, +4 segment, +6 node byte, +7 0, +8 u32 **neighbour parcel**, +12 offset of the same point's edge record there, +14 0 (**checked**: reciprocal) |
 | 7 | 0x0c (6 B) | **shape points**: x, y, 0, 0; a segment's shape runs from its +4 to the next segment's +4, start → end (**confirmed** dbq `FUN_000149ba`) |
-| 8 | 4 B | levels 1-3: **child grid**: n × n pointers to parcels of the level below, column-major, cell = word 0x5c = the smallest child, at least box / 16; each = the child holding the cell centre, 0 = none |
+| 8 | 4 B | levels 1-3: **child grid**: n × n pointers to parcels of the level below, column-major, cell = word 0x5c = the smallest child, at least box / 16; each = the child holding the cell centre, 0 = none. **Checked** on the original: no child is smaller than a cell (n ≤ 16), so every node is found in the child at its cell (the router goes down by the grid); the encoder splits an upper parcel until its smallest child is ≥ box / 16 |
 | 9 | 0x0f (8 B) | **neighbour parcels**: u32 pointer, u16 x, u16 y (a point on the shared border, 64-unit steps) |
 | 10 | 0x14 (8 B) | **prohibited turns** (**confirmed** rpmod `FUN_0000bb24`): u32 parcel of the target, u16 target segment, u16 flags; bit 0 = direction on the source (0 = end → start, via its start node; 1 = start → end, via its end node); bit 1 *unused*. A segment's entries run from its +18 to the next segment's +18; the router keeps 8 per direction |
 | 11 | 0x13 (6 B) | **signposts** (guidance only): text (destination "krakow"), text (route "e77"), u16 direction; from the segment's +30 |
@@ -286,6 +286,18 @@ their own level.
   class ≤ 2 / ≤ 1 / 0 heading at a node that goes up exists in the parent; `tests/check_db.py`).
   The encoder's first discs broke this (headings from the simplified shape): the router went up
   to level 1, failed and started over.
+- **Going down is the same match the other way** (**checked** on the original: every node and
+  edge point of a level 1-3 parcel exists in the child at its grid cell, with the headings of its
+  segments there; `tests/check_db.py`). After the search the route is expanded to level 0 along
+  the coarse segments (the device reads the level 0 parcels along the whole route). So an upper
+  level **edge point** is a level 0 edge point (same position) and keeps the level 0 headings:
+  the encoder cuts the upper levels at the level 0 cut points and keeps them and their
+  neighbouring shape points when simplifying, and gives every upper segment exactly the sum of
+  the level 0 segment lengths it stands for (on the original 370 of 371 in Warsaw; a 1-2 m
+  rounding difference in 7 % of the segments still stopped the expansion at the Siekierkowski
+  bridge). Discs before 2026-10-28 cut the simplified shape
+  instead: the route ended at the first level 1 parcel border (the device found no level 0
+  point there and drew the route only up to it).
 - Segment +11 bit 6 only adds a cost (`FUN_0000b622`: + 0x100 × the segment's cost factor), most
   likely a toll flag; never set in Poland on the original.
 
@@ -347,6 +359,25 @@ slot has offset 0.
 cemetery, 8 land / island. **Line types** (**checked**): 101 rivers and canals, 102 railways
 (level 0), 103 probably borders (levels 3-5), 104 main roads (A, S, main national), 105 other
 national roads, 106 voivodeship roads. The original drops 106 above level 1 and 105 above level 2.
+
+What the original shows per level (around Warsaw): levels 0-1 built-up areas named after the
+village / town (one area per place), forests, water, rivers of some length; level 2 towns,
+few forests, long rivers; levels 3-4 only towns, big water, rivers like the Vistula, main roads
+and borders (103); level 5 the biggest towns and borders. The encoder follows this: landuse
+built-up on levels 0-1 (the largest area of each village / town district named), towns from
+level 1, forests up to 2, cemeteries up to 1, rivers by length (named from 20 km, levels 3-4
+from 150 km). A unit that gets too full drops the rest first (small areas, roads; on levels 1-2
+all roads, the routing parcels draw them there), then areas of ≥ 5 × the level's smallest area
+and, on levels 3-4, main roads (104) (by m² / length²), big towns, big water (≥ 20 ×) and named
+rivers last. Levels 1-2 keep only roads 104-105 / 104: with roads first, a Warsaw unit of level 1
+held only roads (every carriageway is a line).
+
+**Keep the original's density.** The device holds about as many units per view as the original
+needs (its cache / RAM is sized for that): units below the original's smallest side (2^19 / 2^21 /
+2^22 on levels 0-2) are not made, a full unit drops shapes instead. Discs before 2026-10-28 split
+down to 2^18 and needed 5-7x the original's background bytes per view (Warsaw at bg1: 356 KB
+against 50 KB); the device then drew roads in pieces and lost parts of the map, and the router
+(level 0 parcels with 4.3 shape points per segment, the original has 1.35) stopped mid-route.
 
 ## 7. POI (tables 7, 11, 12)
 
@@ -419,12 +450,15 @@ u16 offset of the category's brand list (slot 5: 12 B, table 12 unit / offset / 
 **Country numbers** index the firmware's **country table** (NAV_SW disc; number − 1 = record,
 6-byte records: u8 index, 5-byte car registration code, the code the menus show): an
 alphabetical English list of 240 countries (1 AFG, 33 BG, 53 HR, 56 CZ, 81 D, 97 H, 171 PL, 176
-RO, 188 WAL, 190 SK, 191 SLO, 237 YU, 240 ZW; gaps have no code). Without a map the menus show
-D (81). The country name comes from the disc. Serbia has no code of its own: the encoder gives
-all ExYugoslavia countries (si, hr, ba, me, rs, xk, mk, al) 237 YU, each its own country record
-(name, ISO code, city trie) with the same number; block 2 slot 2 then holds the settings of 237
-once (hr and si have identical settings on the original). *Open*: whether the firmware anywhere
-picks a country by its number alone (then countries sharing a number could be mixed up).
+RO, 188 WAL, 190 SK, 191 SLO, 237 YU, 240 ZW; gaps have no code; full list in
+[country_table.md](country_table.md)). Without a map the menus show
+D (81). The country name comes from the disc. The encoder gives every country a number of its
+own, as the firmware may pick a country by number alone (e.g. one kept in NV): the real one where
+the table has it (si 191 SLO, hr 53 HR, ba 27 BHI, mk 126 MK, al 2 AL), Serbia 237 YU, Montenegro
+235 and Kosovo 236 (unused entries without a code: Western Sahara, Yemen). Block 2 slot 2 holds
+one 22-byte settings record per number, sorted by number (hr and si have identical settings on
+the original; the original's slot has room for 11). *Open*: what the menus show for a number
+without a code (check on the device).
 
 `tests/check_search.py` walks the chain like the device (the original passes 92-99.9 %: names in
 other languages; the encoder output 100 %).
@@ -452,12 +486,16 @@ What `navdb/encoder.py` does, as rules any writer must follow:
    and zero name tables; background units with zero name tables. Level 0 parcels are then
    compressed (`libs/pack.py`, the inverse of pbp; about 2x), everything else stays uncompressed.
 2. **Parcels** on a quadtree aligned to the index grid, at most 8 blocks each. A road becomes
-   segments between nodes (junctions, attribute changes, parcel borders); bends are shape points.
+   segments between nodes (junctions, attribute changes, parcel borders); bends are shape points,
+   simplified at 2 m (about the original's 1.35 points per segment; lengths stay those of the full
+   shape). Parcels are filled close to the original's size (level 0 up to about 15 KB unpacked, the
+   original's median is 10 KB): the device routes and draws through few large parcels.
    Roads crossing a parcel border are cut; the cut point is an edge point pair (never at a corner,
    never on another vertex, one per pair of parcels). Segments sorted by class, nodes by best
    class, class index, node rings, node bytes, neighbour list.
 3. **Levels 1-3**: roads of class ≤ 2 / ≤ 1 / 0, chains through degree-2 nodes joined into one
-   segment (length = sum; loops cut in two), shapes simplified; a node kept on a level is kept on
+   segment (length = sum; loops cut in two), shapes simplified (keeping the level 0 edge points
+   and their neighbours: upper edge points are level 0 ones); a node kept on a level is kept on
    every level below, node byte c = 3 − its top level; parcels are quadtree ancestors of the level
    below (≥ 2^18 for levels 1-2, ≥ 2^20 for level 3, ≤ 2^21), parent pointers and child grids.
    Level 0 header 0x60-0x68 = mean travel time to each level's network.
@@ -505,7 +543,7 @@ admin_level 2 boundary holds it, the rest is left out):
 | other ExYugoslavia countries: the levels in `libs/countries.py`; bilingual "a / b" names → a; Albanian "Komuna e Prishtinës" → "prishtine" | city / municipality / settlement / district |
 | addr:housenumber + addr:street | house numbers on the nearest segment of the street, by side |
 | amenity fuel / hospital / police / bus_station / car_rental / parking + park_ride, tourism hotel / motel / museum, shop car / car_repair, railway station / halt, aeroway aerodrome (iata or public) | POI 12 / 41 / 42 / 54 / 13 / 15, 21 / 32, 11 / 59, 51, 52 |
-| natural water, landuse forest, leisure park, landuse cemetery, landuse residential …, place island, waterway river / canal, railway rail | background areas 1, 3, 3, 6, 5, 8 and lines 101, 102 |
+| natural water, landuse forest, leisure park, landuse cemetery, landuse residential …, place island, waterway river / canal, railway rail | background areas 1, 3, 3, 6, 5, 8 and lines 101, 102 (names: water, rivers and towns only) |
 
 ## 11. Open questions
 

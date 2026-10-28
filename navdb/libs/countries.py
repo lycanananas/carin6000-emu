@@ -3,11 +3,12 @@ countries; each country is a separate entry of the Country menu.
 
 The country number (table b +40, block 2's per-country settings) indexes the firmware's country
 table (number - 1 = record index; 6-byte records: index byte, car registration code shown in
-the menus): an alphabetical English list of 240 countries (bg 33 BG, hr 53 HR, pl 171 PL, sk 190
-SK, 188 WAL = Sierra Leone ...). The ExYugoslavia countries all get 237 YU (Yugoslavia), as one
-number can serve several countries; block 2 then holds its settings once. The country name comes
-from the disc; the per-country settings are copied from a similar country (template; hr and si
-have the same settings).
+the menus): an alphabetical English list of 240 countries (docs/country_table.md). Every country
+gets a number of its own, as the firmware may pick a country by number alone (e.g. one kept in
+NV): its real one where the table has it, Serbia 237 YU (Yugoslavia), Montenegro and Kosovo
+unused numbers without a code (235 Western Sahara, 236 Yemen). Block 2 holds the settings once
+per number. The country name comes from the disc; the per-country settings are copied from a
+similar country (template; hr and si have the same settings).
 
 A country's area is its OSM admin_level 2 boundary (ISO3166-1 code, from its own Geofabrik
 extract, libs/osmsrc.py); what lies outside every country of the package is left out.
@@ -45,25 +46,26 @@ class Country:
 
 
 SQ_GENITIVE = (("ajt", "aj"), ("es", "e"), ("se", ""), ("it", ""), ("ut", ""))    # Albanian
-PL, YU = 171, 237              # firmware country table numbers (record index + 1)
+# firmware country table numbers (record index + 1), docs/country_table.md
+AL, BIH, HR, MK, PL, SLO, ME, XK, YU = 2, 27, 53, 126, 171, 191, 235, 236, 237
 
 COUNTRIES = {
     "pl": Country("polska", "pl", PL, 0x12, "pl", "polska", ((7,), 6, 8, 9), ("gmina ",), True),
-    "si": Country("slovenija", "si", YU, 0x17, "si", "slovenia", ((8,), 7, 10, 9),
+    "si": Country("slovenija", "si", SLO, 0x17, "si", "slovenia", ((8,), 7, 10, 9),
                   ("mestna obcina ", "obcina ", "upravna enota ", "cetrtna skupnost ", "krajevna skupnost ")),
-    "hr": Country("hrvatska", "hr", YU, 0x1A, "hr", "croatia", ((7,), 4, 8, 9),
+    "hr": Country("hrvatska", "hr", HR, 0x1A, "hr", "croatia", ((7,), 4, 8, 9),
                   ("opcina ", "grad ", "gradska cetvrt ", "gradski kotar ", "mjesni odbor ")),
-    "ba": Country("bosna i hercegovina", "ba", YU, 0x1A, "hr", "bosnia-herzegovina", ((6, 7), 5, 9, 7),
+    "ba": Country("bosna i hercegovina", "ba", BIH, 0x1A, "hr", "bosnia-herzegovina", ((6, 7), 5, 9, 7),
                   ("grad ", "opcina ", "opstina ", "mz ")),
-    "me": Country("crna gora", "me", YU, 0x1A, "hr", "montenegro", ((6,), None, 8, 9),
+    "me": Country("crna gora", "me", ME, 0x1A, "hr", "montenegro", ((6,), None, 8, 9),
                   ("opstina ", "glavni grad ", "prijestolnica ")),
     "rs": Country("srbija", "rs", YU, 0x1A, "hr", "serbia", ((7, 8), 6, 9, 8),
                   ("gradska opstina ", "opstina ", "grad ")),
-    "xk": Country("kosovo", "xk", YU, 0xFF, "hr", "kosovo", ((6,), 5, 8, 10),
+    "xk": Country("kosovo", "xk", XK, 0xFF, "hr", "kosovo", ((6,), 5, 8, 10),
                   ("komuna e ", "rajoni i "), genitive=SQ_GENITIVE),
-    "mk": Country("makedonija", "mk", YU, 0xFF, "hr", "macedonia", ((6, 7), None, 8, 7),
+    "mk": Country("makedonija", "mk", MK, 0xFF, "hr", "macedonia", ((6, 7), None, 8, 7),
                   ("opstina ", "grad ")),
-    "al": Country("shqiperia", "al", YU, 0xFF, "hr", "albania", ((7,), 6, 8, 9),
+    "al": Country("shqiperia", "al", AL, 0xFF, "hr", "albania", ((7,), 6, 8, 9),
                   ("bashkia ", "qarku i ", "njesia bashkiake ", "njesia administrative "), genitive=SQ_GENITIVE),
 }
 
@@ -75,3 +77,4 @@ PACKAGES = {
 
 for _isos in PACKAGES.values():         # addresses and POI streets are read with one street rule
     assert len({COUNTRIES[i].street_prefix for i in _isos}) == 1, _isos
+    assert len({COUNTRIES[i].number for i in _isos}) == len(_isos), _isos

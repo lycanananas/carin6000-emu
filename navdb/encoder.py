@@ -216,11 +216,17 @@ def main():
           f"{len({(r.country, r.settlement) for r in roads.values() if r.settlement and r.country})} settlements")
     del roads
 
-    # level 0 parcels and house numbers
+    # level 0 parcels and house numbers; shapes simplified first (lengths stay those of the OSM shape)
+    step = 20000
+    shapes = [s for part in pmap(lambda chunk: [levels.simplify(e.points(), levels.TOLERANCE[0])[1:-1] for e in chunk],
+                                 [net.edges[i:i + step] for i in range(0, len(net.edges), step)], 2) for s in part]
+    for e, s in zip(net.edges, shapes):
+        e.shape = s
+    del shapes
     gbox = (*gps(bbox[0], bbox[1]), *gps(bbox[2], bbox[3]))
     leaves = parcelbuild.tile(net.edges, gbox)
     parcelbuild.nudge_edges(net.edges, leaves)
-    by_level = {0: parcelbuild.clip(net.edges, leaves)}
+    by_level = {0: parcelbuild.clip(net.edges, leaves, record=True)}
     addresses = osmaddr.load(osm, bbox, package[0])      # one street rule per package (countries.py)
     numbered = osmaddr.assign(by_level[0], addresses)
     rules = list(dict.fromkeys(r for x in extracts for r in osmturns.restrictions(args.temp / "osm" / f"{x}-latest.osm.pbf")))
@@ -230,21 +236,22 @@ def main():
 
     # routing levels 1-3
     top, keep_by, inc_by = levels.tops(net.edges)
+    fixed = {pt for pc in by_level[0] for pt in pc.borders}     # upper edge points = level 0 ones
     for k in (1, 2, 3):
         edges = levels.join(net.edges, levels.CLASSES[k], keep_by[k], inc_by[k], levels.TOLERANCE[k],
-                            net.nodes, top, k)
+                            net.nodes, top, k, fixed)
         lower = by_level[k - 1]
         if not edges or not lower:
             by_level[k] = []
             continue
-        by_level[k] = parcelbuild.clip(edges, levels.upper_tiles(lower, edges, k))
+        by_level[k] = parcelbuild.clip(edges, levels.upper_tiles(lower, edges, k), fixed)
         for child in lower:
             child.parent = next((pc for pc in by_level[k] if levels._inside(child.box, pc.box)), None)
             if child.parent:
                 child.parent.children.append(child)
     travel_times(net.edges, top, by_level[0])
     bg_roads = [e for e in net.edges if e.road.cls <= 3 and e.road.kind != 5]     # for the background
-    del net, keep_by, inc_by, edges          # the network lives on in the parcels
+    del net, keep_by, inc_by, edges, fixed   # the network lives on in the parcels
     for k, pcs in by_level.items():
         print(f"level {k}: {len(pcs)} parcels, {sum(len(pc.pieces) for pc in pcs)} segments, "
               f"{sum(len(pc.borders) for pc in pcs) // 2} border crossings"
@@ -365,7 +372,14 @@ def main():
         (bbox[0], bbox[2], bbox[1], bbox[3])) if n}
     towns = [(a.name, ring) for c in package for a in atlas.places[c.iso].levels[c.levels[2]]
              if (a.base or a.name) in town_names for ring in a.rings]
-    shapes = osmbg.merge_lines(osmbg.clip_to_area(osmbg.load(osm, bbox, bg_roads, towns), gbox))
+    shapes = osmbg.load(osm, bbox, bg_roads, towns)
+    def place_of(p):                        # the village / town district a built-up area lies in
+        c = atlas.country_at(p)
+        pl = c and atlas.places[c.iso]
+        return pl and (pl.settlement_of(p) or pl.city_of(p)[0].replace("?", "") or None)
+    atlas.clear()
+    osmbg.name_builtup(shapes, place_of, {n for n, _ in towns})
+    shapes = osmbg.merge_lines(osmbg.clip_to_area(shapes, gbox))
     for level in range(6):
         tiles = osmbg.tiles(level, gbox, osmbg.level_shapes(shapes, level), parcelbuild.ORIGIN)
         bkeys = [("bg", level, n) for n in range(len(tiles))]

@@ -20,7 +20,9 @@ ORIGIN = (-34998272, -59092992)    # grid origin of every index (block 2 directo
 EXTENT = 1 << 29
 MIN_SIZE = 1 << 15                 # smallest parcel side in the original (32768 units)
 MAX_SIZE = 1 << 21                 # largest level 0 parcel side (points are u16 steps of 64)
-MAX_BYTES = 12000                  # estimated parcel size limit (units are at most 8 blocks)
+MAX_BYTES = 17000                  # estimated level 0 parcel size limit: about 15 KB unpacked (the
+                                   # estimate is high by 1.1-1.3x), the original goes to 15.9 KB
+MAX_UPPER_BYTES = 12000            # levels 1-3 (the original: at most 11.8 KB)
 SEG = 32                           # level 0 segment record (type 0x08)
 
 
@@ -179,10 +181,14 @@ def nudge_edges(edges, leaves):
         e.a, e.b, e.shape = inside(e.a), inside(e.b), [inside(p) for p in e.shape]
 
 
-def clip(edges, leaves):
+def clip(edges, leaves, fixed=frozenset(), record=False):
     """Parcels with the edge pieces inside them. Every line segment is split where it crosses a
     parcel border line, each part goes to the parcel holding its middle, and where the parcel
-    changes the crossing point becomes an edge point pair (on the grid, unique per parcel)."""
+    changes the crossing point becomes an edge point pair (on the grid, unique per parcel).
+    record: the cut points are put into the edges' shapes (level 0, so that the levels above,
+    whose borders are level 0 borders, cut at the same points: the router goes down a level by
+    the point and its heading). fixed: such points, used as they are where a border runs through
+    them."""
     import bisect
     grid = Grid(leaves)
     parcels = {id(b): Parcel(b) for b in leaves}
@@ -214,7 +220,7 @@ def clip(edges, leaves):
             lo, hi = max(a.x, b.x) + POINT_STEP, min(a.x + a.size, b.x + b.size) - POINT_STEP
             pt, axis = [min(max(round(x / POINT_STEP) * POINT_STEP, lo), hi), by], 0
         k = 0
-        while (id(a), tuple(pt)) in used or (id(b), tuple(pt)) in used or tuple(pt) in vertices:
+        while (id(a), tuple(pt)) in used or (id(b), tuple(pt)) in used or (tuple(pt) in vertices and tuple(pt) not in fixed):
             k += 1
             pt[axis] += POINT_STEP * k * (-1) ** k
             if not lo <= pt[axis] <= hi:
@@ -232,15 +238,18 @@ def clip(edges, leaves):
             for k in range(len(ts) - 1):
                 a = (p[0] + ts[k] * (q[0] - p[0]), p[1] + ts[k] * (q[1] - p[1]))
                 b = (p[0] + ts[k + 1] * (q[0] - p[0]), p[1] + ts[k + 1] * (q[1] - p[1]))
-                parts.append((p, q, ts[k + 1], leaf_at(a, b), k + 1 == len(ts) - 1))
+                parts.append((p, q, ts[k + 1], leaf_at(a, b), k + 1 == len(ts) - 1, i))
         cur = parts[0][3] if parts else None
+        cuts = []                                # (segment index, cut point)
+        acc, marks = 0, {}                       # level 0 lengths so far, at each cut point
         piece, start_border = [pts[0]], False
-        for n, (p, q, t, leaf, at_vertex) in enumerate(parts):
+        for n, (p, q, t, leaf, at_vertex, _) in enumerate(parts):
             if leaf is None:
                 cur, piece = None, None
                 continue
             if cur is None:                      # coming back into the tiled area: start over
                 cur, piece, start_border = leaf, [q if at_vertex else p], False
+                marks = None
                 continue
             if leaf is not cur:
                 # the previous part ended on a border between cur and leaf
@@ -248,14 +257,18 @@ def clip(edges, leaves):
                 c = cut_point(pp, pq, pt_t, cur, leaf) if _adjacent(cur, leaf) else None
                 if c is None:                    # corner or no shared border: drop this piece
                     cur, piece, start_border = leaf, [q if at_vertex else p], False
+                    marks = None
                     continue
                 if piece[-1] != c:
                     piece.append(c)
+                if record and c != pp and c != pq:
+                    cuts.append((parts[n - 1][5], c))
                 if len(piece) >= 2:
                     pa, pb = parcels[id(cur)], parcels[id(leaf)]
                     used.add((id(cur), c))
                     used.add((id(leaf), c))
-                    _emit(pa, piece, e.road, (start_border, True), e, scale)
+                    acc += _emit(pa, piece, e.road, (start_border, True), e, scale)
+                    marks[c] = acc
                     pa.borders[c], pb.borders[c] = pb, pa
                     cur, piece, start_border = leaf, [c], True
                 else:
@@ -263,7 +276,18 @@ def clip(edges, leaves):
             if at_vertex and piece[-1] != q:
                 piece.append(q)
         if cur is not None and piece and len(piece) >= 2:
-            _emit(parcels[id(cur)], piece, e.road, (start_border, False), e, scale)
+            acc += _emit(parcels[id(cur)], piece, e.road, (start_border, False), e, scale)
+        else:
+            marks = None
+        if record and marks is not None:         # the levels above add up the same lengths
+            e.marks, e.length = marks, acc
+        if cuts:
+            e.h0, e.h1 = edge_headings(e)        # the node headings stay those of the old shape
+            shape = []
+            for i, p in enumerate(pts[1:], 1):
+                shape += [c for k, c in cuts if k == i - 1]
+                shape.append(p)
+            e.shape = shape[:-1]
     # a border pair needs a piece ending at the point on both sides (a side may have been dropped)
     ends = {id(pc): {p for piece in pc.pieces for p in (piece.points[0], piece.points[-1])}
             for pc in parcels.values()}
@@ -300,12 +324,19 @@ def piece_headings(pc):
 
 def _emit(parcel, pts, road, border, e, scale):
     """A piece of edge e; a piece starting / ending at e's node keeps e's heading there, and its
-    length is its share of e's length (upper levels: the level 0 length, not the simplified one)."""
-    length = sum(metres(pts[k], pts[k + 1]) for k in range(len(pts) - 1)) * scale
+    length is its share of e's length (upper levels: the level 0 length, not the simplified one;
+    between points of e.marks exactly the sum of the level 0 pieces, as on the original)."""
+    length = max(1, round(sum(metres(pts[k], pts[k + 1]) for k in range(len(pts) - 1)) * scale))
+    if e.marks is not None:
+        s = 0 if pts[0] == e.a and not border[0] else e.marks.get(pts[0])
+        t = e.length if pts[-1] == e.b and not border[1] else e.marks.get(pts[-1])
+        if s is not None and t is not None and t > s:
+            length = t - s
     h0, h1 = edge_headings(e)
-    parcel.pieces.append(Piece(pts, road, max(1, round(length)), border,
+    parcel.pieces.append(Piece(pts, road, length, border,
                                h0=h0 if pts[0] == e.a and not border[0] else None,
                                h1=h1 if pts[-1] == e.b and not border[1] else None))
+    return length
 
 
 def segment_defaults(road):

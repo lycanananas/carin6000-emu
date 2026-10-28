@@ -1,10 +1,12 @@
 """Background (map picture) from OpenStreetMap, 6 levels, for the encoder (docs/format.md section 5).
 
 Areas (slot 1): 3 forest / park, 5 built-up, 6 cemetery, 8 land (islands), 1 water, drawn in this
-order; lines (slot 2): 101 rivers and canals, 102 railways, 104 / 105 / 106 roads by class (our
-road network: class 0-1 / 2 / 3), named by their road number. Every level has fixed unit sizes and
-point steps as in the original; shapes are simplified, small areas dropped and everything clipped
-to the unit box. Units are written as pbp leaves them in RAM (bgfmt).
+order; only towns (built-up areas of places) and water are named, as on the original (parks and
+nature reserves would label the map instead of the towns). Lines (slot 2): 101 rivers and canals,
+102 railways, 104 / 105 / 106 roads by class (our road network: class 0-1 / 2 / 3), named by
+their road number. Every level has fixed unit sizes and point steps as in the original; shapes
+are simplified, small areas dropped and everything clipped to the unit box. Units are written as
+pbp leaves them in RAM (bgfmt).
 """
 import math
 import sqlite3
@@ -21,12 +23,17 @@ from .osmnet import gps
 
 KIND = {0: 0x16, 1: 0x15, 2: 0x1C, 3: 0x14, 4: 0x1D, 5: 0x1E}
 TABLE = {0: 6, 1: 0x16, 2: 0x15, 3: 0x1C, 4: 0x14, 5: 0x1D}
-UNIT = {0: 1 << 20, 1: 1 << 21, 2: 1 << 22, 3: 1 << 24, 4: 1 << 25, 5: 1 << 26}
-MIN_UNIT = {0: 1 << 18, 1: 1 << 18, 2: 1 << 18, 3: 1 << 24, 4: 1 << 25, 5: 1 << 26}
-MIN_AREA = {0: 1e4, 1: 1e5, 2: 5e5, 3: 3e6, 4: 2e7, 5: 1e8}          # m2
-TOLERANCE = {0: 6, 1: 25, 2: 60, 3: 200, 4: 600, 5: 2000}           # metres
+UNIT = {0: 1 << 21, 1: 1 << 22, 2: 1 << 23, 3: 1 << 24, 4: 1 << 25, 5: 1 << 26}
+MIN_UNIT = {0: 1 << 19, 1: 1 << 21, 2: 1 << 22, 3: 1 << 24, 4: 1 << 25, 5: 1 << 26}   # as the original:
+                                # the device holds about as many units per view as the original needs
+MIN_AREA = {0: 2e4, 1: 5e5, 2: 2e6, 3: 3e6, 4: 2e7, 5: 1e8}          # m2 (the original: 2e4, 4e5, 2e6)
+TOLERANCE = {0: 6, 1: 40, 2: 100, 3: 200, 4: 600, 5: 2000}          # metres
 AREA_ORDER = (3, 5, 6, 8, 1)
-LINES = {0: (101, 102, 104, 105, 106), 1: (101, 104, 105, 106), 2: (101, 104, 105), 3: (101, 104),
+AREA_LEVELS = {5: (0, 1), 3: (0, 2), 6: (0, 1)}  # landuse built-up, forest / park, cemetery (as the
+                                                # original: towns, water and main roads above)
+RIVER_NAME_KM = 20                              # shorter rivers and canals stay unnamed
+LINES = {0: (101, 102, 104, 105, 106), 1: (101, 104, 105), 2: (101, 104), 3: (101, 104),   # (the routing
+                                # parcels draw the roads too; a full unit would hold only roads)
          4: (101, 104), 5: ()}
 ROAD_TYPE = {0: 104, 1: 104, 2: 105, 3: 106}
 MAX_UNIT = 8 * BLOCK - 256
@@ -122,7 +129,7 @@ def load(gpkg, bbox, edges, towns):
          "m.other_tags LIKE '%riverbank%')")
     shapes = prows(gpkg, q, (bbox[0], bbox[2], bbox[1], bbox[3]), _areas)
     for name, ring in towns:                    # towns as named built-up areas on the coarse levels
-        shapes.append(Shape(5, name, ring, _metres_area(ring), _centre(ring), (2, 5)))
+        shapes.append(Shape(5, name, ring, _metres_area(ring), _centre(ring), (1, 5)))
     shapes += prows(gpkg,
             "SELECT l.osm_id, l.name, l.waterway, l.railway, l.geom FROM lines l JOIN rtree_lines_geom r ON l.fid = r.id "
             "WHERE r.maxx >= ? AND r.minx <= ? AND r.maxy >= ? AND r.miny <= ? AND "
@@ -156,8 +163,8 @@ def _areas(rows):
             ring = outer[:-1] if outer[0] == outer[-1] else outer
             if len(ring) < 3:
                 continue
-            shapes.append(Shape(kind, fold(name) if kind != 5 else None, ring, _metres_area(ring), _centre(ring),
-                                (0, 1) if kind == 5 else (0, 5)))     # landuse built-up: fine levels only
+            shapes.append(Shape(kind, fold(name) if kind == 1 else None, ring, _metres_area(ring), _centre(ring),
+                                AREA_LEVELS.get(kind, (0, 5))))
             if kind == 1:                       # islands in water: land drawn over it
                 for inner in inners:
                     inner = simplify(inner, TOLERANCE[0])
@@ -179,7 +186,9 @@ def _finish(shapes, edges):
     for s in shapes:                            # rivers on the coarse levels by their length here
         if s.kind == 101:
             km = river_len.get(s.name, 0) / 1000 if s.name else 0
-            s.levels = (0, 0 if km < 5 else 1 if km < 20 else 2 if km < 50 else 4)
+            s.levels = (0, 0 if km < 5 else 1 if km < 20 else 2 if km < 150 else 4)
+            if km < RIVER_NAME_KM:
+                s.name = None
     for e in edges:
         if e.road.cls <= 3 and e.road.kind != 5:
             shapes.append(Shape(ROAD_TYPE[e.road.cls], e.road.ref, e.points()))
@@ -225,13 +234,34 @@ def merge_lines(shapes):
     return out
 
 
-def _weight(s):
-    """Importance for dropping: areas by m2, lines by length squared (m2)."""
+def _weight(s, level):
+    """Importance for dropping: big towns and big water (20 x the level's smallest area) and named
+    rivers first, then main roads (104) together with areas of 5 x the smallest, then the rest;
+    within a group areas by m2, lines by length squared (m2). (Main roads above the areas filled a
+    Warsaw unit of level 1 with roads only: every carriageway is a line.)"""
+    big = s.kind in (1, 5) and (s.name or s.kind == 1) and s.area >= 20 * MIN_AREA[level]
+    road = s.kind == 104 and level >= 3     # levels 1-2: the routing parcels draw the roads
+    rank = (2 if big or (s.kind == 101 and s.name) else
+            1 if road or (s.kind < 100 and s.area >= 5 * MIN_AREA[level]) else 0)
     if s.kind < 100:
-        return s.area
+        return rank, s.area
     length = sum(math.hypot((s.points[i + 1][0] - s.points[i][0]) * 0.62, s.points[i + 1][1] - s.points[i][1])
                  for i in range(len(s.points) - 1)) * 1.8e-7 * 110574
-    return length * length
+    return rank, length * length
+
+
+def name_builtup(shapes, place_of, towns):
+    """Built-up areas of the fine levels get the name of the place at their label point (a village,
+    a town's district): only the largest area of each place, so one label each, as the original;
+    not the towns (their own areas are named from level 1)."""
+    best = {}
+    for s in shapes:
+        if s.kind == 5 and s.name is None and s.levels == AREA_LEVELS[5]:
+            name = place_of(s.label)
+            if name and name not in towns and (name not in best or s.area > best[name].area):
+                best[name] = s
+    for name, s in best.items():
+        s.name = name
 
 
 def _centre(ring):
@@ -476,12 +506,14 @@ def _fit(level, box, shapes):
         h = size // 2
         return [t for dx in (0, h) for dy in (0, h)
                 for t in _fit(level, (box[0] + dx, box[1] + dy, box[0] + dx + h, box[1] + dy + h), inside)]
-    keep = sorted(inside, key=lambda s: -_weight(s))
+    keep = sorted(inside, key=lambda s: _weight(s, level), reverse=True)
     while keep:
         used, data = _size(level, box, keep)
         if used <= MAX_UNIT:
             return [(box, data)]
-        keep = keep[:int(len(keep) * 0.9)]
+        share = MAX_UNIT / used if used < 1 << 30 else 0.5      # 1 << 30: the offsets overflow
+        n = min(int(len(keep) * 0.9), int(len(keep) * share))
+        keep = keep[:max(n, 1) if len(keep) > 1 else 0]
     return []
 
 
